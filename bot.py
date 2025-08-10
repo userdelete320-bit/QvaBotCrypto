@@ -4,6 +4,12 @@ from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Updater, CommandHandler, CallbackQueryHandler, CallbackContext
 import requests
 from datetime import datetime
+import os
+import logging
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
+import requests
+from datetime import datetime
 
 # Configuración
 TOKEN = os.getenv("TELEGRAM_TOKEN")
@@ -55,18 +61,18 @@ def get_price(crypto_id):
         return "⚠️ Error al obtener datos. Intenta nuevamente."
 
 # Handler de comandos
-def start(update: Update, context: CallbackContext) -> None:
-    update.message.reply_text(
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    await update.message.reply_text(
         "💰 *Monitor de Criptoactivos* 💰\nSelecciona un activo:",
         parse_mode="Markdown",
         reply_markup=get_keyboard()
     )
 
-def button_click(update: Update, context: CallbackContext) -> None:
+async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.callback_query
-    query.answer()
+    await query.answer()
     message = get_price(query.data)
-    query.edit_message_text(
+    await query.edit_message_text(
         text=message,
         parse_mode="Markdown",
         reply_markup=get_keyboard()
@@ -79,18 +85,16 @@ def main():
         level=logging.INFO
     )
     
-    # Versión compatible con Render
-    updater = Updater(token=TOKEN, use_context=True)
-    dispatcher = updater.dispatcher
+    # Crear la aplicación y pasar el token
+    application = Application.builder().token(TOKEN).build()
     
     # Handlers
-    dispatcher.add_handler(CommandHandler("start", start))
-    dispatcher.add_handler(CallbackQueryHandler(button_click))
+    application.add_handler(CommandHandler("start", start))
+    application.add_handler(CallbackQueryHandler(button_click))
     
     # Iniciar bot
     logging.info("Bot iniciado - Escuchando comandos...")
-    updater.start_polling()
-    updater.idle()
+    application.run_polling()
 
 if __name__ == "__main__":
     main()
