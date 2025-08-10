@@ -5,20 +5,22 @@ from telegram.ext import Updater, CommandHandler, CallbackQueryHandler, Callback
 import requests
 from datetime import datetime
 
-# Configuración SEGURA (usar variables de entorno)
-TOKEN = os.getenv("TELEGRAM_TOKEN")  # Crea esta variable en Render
+# Configuración
+TOKEN = os.getenv("TELEGRAM_TOKEN")
 
-# Lista de activos (personalizable)
+# Lista de activos actualizada
 ASSETS = {
     "bitcoin": "BTC",
     "ethereum": "ETH",
     "binancecoin": "BNB",
     "tether": "USDT",
     "dai": "DAI",
-    "usd-coin": "USDC"
+    "usd-coin": "USDC",
+    "ripple": "XRP",
+    "cardano": "ADA"
 }
 
-# Generar teclado interactivo
+# Generar teclado
 def get_keyboard():
     buttons = []
     row = []
@@ -27,15 +29,16 @@ def get_keyboard():
         if (i + 1) % 3 == 0:  # 3 botones por fila
             buttons.append(row)
             row = []
-    if row:  # Añadir fila incompleta
+    if row:
         buttons.append(row)
     return InlineKeyboardMarkup(buttons)
 
-# Obtener precios con manejo de errores
+# Obtener precios mejorado
 def get_price(crypto_id):
     try:
         url = f"https://api.coingecko.com/api/v3/simple/price?ids={crypto_id}&vs_currencies=usd,eur"
         response = requests.get(url, timeout=10)
+        response.raise_for_status()
         data = response.json()
         
         if crypto_id in data:
@@ -48,10 +51,10 @@ def get_price(crypto_id):
             )
         return "❌ Activo no encontrado"
     except Exception as e:
-        logging.error(f"Error API: {e}")
+        logging.error(f"API Error: {e}")
         return "⚠️ Error al obtener datos. Intenta nuevamente."
 
-# Comandos del bot
+# Handler de comandos
 def start(update: Update, context: CallbackContext) -> None:
     update.message.reply_text(
         "💰 *Monitor de Criptoactivos* 💰\nSelecciona un activo:",
@@ -76,16 +79,16 @@ def main():
         level=logging.INFO
     )
     
+    # Versión compatible con Render
+    updater = Updater(token=TOKEN, use_context=True)
+    dispatcher = updater.dispatcher
+    
+    # Handlers
+    dispatcher.add_handler(CommandHandler("start", start))
+    dispatcher.add_handler(CallbackQueryHandler(button_click))
+    
     # Iniciar bot
-    updater = Updater(TOKEN)
-    dp = updater.dispatcher
-    dp.add_handler(CommandHandler("start", start))
-    dp.add_handler(CallbackQueryHandler(button_click))
-    
-    # Mensaje de inicio
-    logging.info("🤖 Bot iniciado - Listo para recibir comandos")
-    
-    # Mantener activo
+    logging.info("Bot iniciado - Escuchando comandos...")
     updater.start_polling()
     updater.idle()
 
