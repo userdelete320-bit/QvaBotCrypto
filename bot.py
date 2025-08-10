@@ -1,7 +1,7 @@
 import os
 import logging
 import requests
-from datetime import datetime
+from datetime import datetime, timedelta
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     Application,
@@ -15,7 +15,7 @@ from supabase import create_client, Client
 
 # Configuración
 TOKEN = os.getenv("TELEGRAM_TOKEN")
-COINCAP_API_KEY = "b34066586e40c21753e4882ca3cd8f1cbab9037e0eb2e274f02d168a6c8f58f5"
+COINCAP_API_KEY = "c0b9354ec2c2d06d6395519f432b056c06f6340b62b72de1cf71a44ed9c6a36e"  # Nueva API Key
 COINCAP_API_URL = "https://api.coincap.io/v3"
 MAX_DAILY_CHECKS = 10
 
@@ -87,37 +87,67 @@ def get_credit_info(user_id):
         logger.error(f"Error getting credit info: {e}")
         return 0, MAX_DAILY_CHECKS
 
-# Obtener precio actual
+# Obtener precio actual (CORREGIDO)
 def get_current_price(asset_id, currency="USD"):
     try:
         coincap_id = ASSETS[asset_id]["coincap_id"]
-        headers = {"Authorization": f"Bearer {COINCAP_API_KEY}"}
+        headers = {
+            "Authorization": f"Bearer {COINCAP_API_KEY}",
+            "Accept-Encoding": "gzip"
+        }
         url = f"{COINCAP_API_URL}/assets/{coincap_id}"
+        
+        logger.info(f"Requesting CoinCap price: {url}")
         response = requests.get(url, headers=headers, timeout=10)
+        logger.info(f"CoinCap response status: {response.status_code}")
+        
         if response.status_code != 200:
             logger.error(f"CoinCap API error: {response.status_code} - {response.text}")
             return None
         
-        data = response.json()["data"]
-        usd_price = float(data["priceUsd"])
+        data = response.json().get("data", {})
+        if not data:
+            logger.error("CoinCap response missing 'data' field")
+            return None
+            
+        usd_price = float(data.get("priceUsd", 0))
+        logger.info(f"USD price for {coincap_id}: {usd_price}")
         
         if currency == "EUR":
+            logger.info("Converting to EUR...")
             eur_response = requests.get(f"{COINCAP_API_URL}/rates/euro", headers=headers)
             if eur_response.status_code != 200:
+                logger.error(f"EUR conversion error: {eur_response.status_code} - {eur_response.text}")
                 return None
-            eur_rate = float(eur_response.json()["data"]["rateUsd"])
+                
+            eur_data = eur_response.json().get("data", {})
+            if not eur_data:
+                logger.error("EUR response missing 'data' field")
+                return None
+                
+            eur_rate = float(eur_data.get("rateUsd", 0))
+            logger.info(f"EUR conversion rate: {eur_rate}")
+            
+            if eur_rate == 0:
+                logger.error("EUR rate is zero, division error")
+                return None
+                
             return usd_price / eur_rate
         else:
             return usd_price
+            
     except Exception as e:
-        logger.error(f"Error in get_current_price: {e}")
+        logger.exception(f"EXCEPTION in get_current_price: {e}")
         return None
 
-# Obtener datos históricos
+# Obtener datos históricos (CORREGIDO)
 def get_historical_prices(asset_id, start_time, end_time, interval="m1"):
     try:
         coincap_id = ASSETS[asset_id]["coincap_id"]
-        headers = {"Authorization": f"Bearer {COINCAP_API_KEY}"}
+        headers = {
+            "Authorization": f"Bearer {COINCAP_API_KEY}",
+            "Accept-Encoding": "gzip"
+        }
         
         start_ms = int(start_time.timestamp() * 1000)
         end_ms = int(end_time.timestamp() * 1000)
@@ -129,54 +159,80 @@ def get_historical_prices(asset_id, start_time, end_time, interval="m1"):
             "end": end_ms
         }
         
-        response = requests.get(url, headers=headers, params=params, timeout=10)
+        logger.info(f"Requesting historical data: {url}?interval={interval}&start={start_ms}&end={end_ms}")
+        response = requests.get(url, headers=headers, params=params, timeout=15)
+        logger.info(f"Historical response status: {response.status_code}")
+        
         if response.status_code != 200:
-            logger.error(f"Error getting history: {response.status_code} - {response.text}")
+            logger.error(f"History API error: {response.status_code} - {response.text}")
             return None
         
-        return response.json()["data"]
+        data = response.json().get("data", [])
+        if not data:
+            logger.error("Historical response has no data")
+            
+        return data
     except Exception as e:
-        logger.error(f"Error getting historical prices: {e}")
+        logger.exception(f"EXCEPTION in get_historical_prices: {e}")
         return None
 
 # Analizar si se tocó SL o TP
 def analyze_price_history(price_history, entry_price, sl_price, tp_price, operation_type):
+    if not price_history:
+        logger.error("No price history to analyze")
+        return None, None
+        
     sl_touched = False
     tp_touched = False
     sl_time = None
     tp_time = None
     
+    logger.info(f"Analyzing {len(price_history)} price points...")
+    logger.info(f"Entry: {entry_price}, SL: {sl_price}, TP: {tp_price}, Op: {operation_type}")
+    
     for price_point in price_history:
-        price = float(price_point["priceUsd"])
-        timestamp = price_point["time"]
+        price = float(price_point.get("priceUsd", 0))
+        timestamp = price_point.get("time", 0)
+        
+        if not price or not timestamp:
+            continue
         
         if operation_type == "buy":
             if price <= sl_price and not sl_touched:
                 sl_touched = True
                 sl_time = datetime.fromtimestamp(timestamp/1000)
+                logger.info(f"SL touched at {price} - {sl_time}")
             if price >= tp_price and not tp_touched:
                 tp_touched = True
                 tp_time = datetime.fromtimestamp(timestamp/1000)
+                logger.info(f"TP touched at {price} - {tp_time}")
         
         elif operation_type == "sell":
             if price >= sl_price and not sl_touched:
                 sl_touched = True
                 sl_time = datetime.fromtimestamp(timestamp/1000)
+                logger.info(f"SL touched at {price} - {sl_time}")
             if price <= tp_price and not tp_touched:
                 tp_touched = True
                 tp_time = datetime.fromtimestamp(timestamp/1000)
+                logger.info(f"TP touched at {price} - {tp_time}")
         
         if sl_touched and tp_touched:
             if sl_time < tp_time:
+                logger.info("SL triggered before TP")
                 return "SL", sl_time
             else:
+                logger.info("TP triggered before SL")
                 return "TP", tp_time
     
     if sl_touched:
+        logger.info("Only SL triggered")
         return "SL", sl_time
     if tp_touched:
+        logger.info("Only TP triggered")
         return "TP", tp_time
     
+    logger.info("Neither SL nor TP triggered")
     return None, None
 
 # Generar teclados
@@ -266,9 +322,11 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     
     elif data.startswith("currency_"):
         _, asset_id, currency = data.split('_')
+        logger.info(f"Getting price for {asset_id} in {currency}")
         price = get_current_price(asset_id, currency)
         
         if price is None:
+            logger.error(f"Failed to get price for {asset_id}")
             await query.edit_message_text("⚠️ Error al obtener precio. Intenta nuevamente.")
             return
             
@@ -282,9 +340,11 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     
     elif data.startswith("trade_"):
         _, asset_id, currency, operation_type = data.split('_')
+        logger.info(f"Starting trade: {asset_id} {currency} {operation_type}")
         price = get_current_price(asset_id, currency)
         
         if price is None:
+            logger.error(f"Price check failed for trade start")
             await query.edit_message_text("⚠️ Error al obtener precio. Intenta nuevamente.")
             return
         
@@ -307,6 +367,7 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
                     'operation_type': operation_type,
                     'entry_price': price
                 }
+                logger.info(f"Operation saved: ID {op_id}")
             else:
                 raise Exception("No data in response")
         except Exception as e:
@@ -338,6 +399,7 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     
     elif data.startswith("view_op_"):
         op_id = data.split('_')[2]
+        logger.info(f"Viewing operation: {op_id}")
         try:
             response = supabase.table('operations').select("*").eq("id", op_id).execute()
             op_data = response.data[0] if response.data else None
@@ -378,10 +440,12 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     
     elif data.startswith("check_op_"):
         op_id = data.split('_')[2]
+        logger.info(f"Checking operation: {op_id}")
         await check_operation(update, context, op_id)
     
     elif data.startswith("close_op_"):
         op_id = data.split('_')[2]
+        logger.info(f"Closing operation: {op_id}")
         try:
             supabase.table('operations').update({"status": "cerrada"}).eq("id", op_id).execute()
         except Exception as e:
@@ -406,6 +470,7 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 async def set_sl_tp(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user_id = update.message.from_user.id
     text = update.message.text.strip()
+    logger.info(f"Received SL/TP from user {user_id}: {text}")
     
     if 'pending_operation' not in context.user_data:
         await update.message.reply_text("No hay operaciones pendientes de configuración")
@@ -503,6 +568,12 @@ async def check_operation(update: Update, context: ContextTypes.DEFAULT_TYPE, op
     start_time = datetime.fromisoformat(op_data['entry_time'])
     end_time = datetime.utcnow()
     
+    # Para debugging: usar periodo más corto si es necesario
+    if (end_time - start_time) > timedelta(hours=24):
+        start_time = end_time - timedelta(hours=24)
+        logger.info(f"Adjusted start time to last 24 hours for efficiency")
+    
+    logger.info(f"Getting history from {start_time} to {end_time}")
     price_history = get_historical_prices(op_data['asset'], start_time, end_time, interval="m1")
     if not price_history:
         await query.edit_message_text("⚠️ Error al obtener datos históricos. Inténtalo más tarde.")
