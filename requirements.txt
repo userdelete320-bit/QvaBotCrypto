@@ -1,4 +1,4 @@
-python-telegram-bot==20.0
+python-telegram-bot==20.1,<20.1
 requests
 python-dotenv
 supabase==2.3.0
