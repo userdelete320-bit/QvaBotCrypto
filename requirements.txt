@@ -1,4 +1,5 @@
-python-telegram-bot==20.5
-requests
-python-dotenv
-supabase==1.0.0
+python-telegram-bot==20.6
+requests==2.31.0
+python-dotenv==1.0.1
+supabase==2.3.0
+httpx==0.24.1
