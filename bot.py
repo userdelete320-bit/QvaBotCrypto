@@ -17,7 +17,7 @@ from supabase import create_client, Client
 TOKEN = os.getenv("TELEGRAM_TOKEN")
 COINCAP_API_KEY = "b34066586e40c21753e4882ca3cd8f1cbab9037e0eb2e274f02d168a6c8f58f5"
 COINCAP_API_URL = "https://api.coincap.io/v3"
-MAX_DAILY_CHECKS = 10  # Límite de consultas diarias por usuario
+MAX_DAILY_CHECKS = 10
 
 # Mapeo de activos
 ASSETS = {
@@ -452,25 +452,22 @@ async def set_sl_tp(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             return
     
     try:
-        response = supabase.table('operations').update({
+        supabase.table('operations').update({
             "stop_loss": sl_price,
             "take_profit": tp_price
         }).eq("id", op_data['id']).execute()
         
-        if response.data:
-            asset_info = ASSETS[asset_id]
-            await update.message.reply_text(
-                f"✅ *Stop Loss y Take Profit configurados!*\n\n"
-                f"• Activo: {asset_info['name']} ({asset_info['symbol']})\n"
-                f"• Stop Loss: {sl_price:.4f} {currency}\n"
-                f"• Take Profit: {tp_price:.4f} {currency}\n\n"
-                f"Operación lista para monitoreo.",
-                parse_mode="Markdown",
-                reply_markup=get_main_keyboard()
-            )
-            del context.user_data['pending_operation']
-        else:
-            await update.message.reply_text("⚠️ Error al actualizar la operación. Intenta nuevamente.")
+        asset_info = ASSETS[asset_id]
+        await update.message.reply_text(
+            f"✅ *Stop Loss y Take Profit configurados!*\n\n"
+            f"• Activo: {asset_info['name']} ({asset_info['symbol']})\n"
+            f"• Stop Loss: {sl_price:.4f} {currency}\n"
+            f"• Take Profit: {tp_price:.4f} {currency}\n\n"
+            f"Operación lista para monitoreo.",
+            parse_mode="Markdown",
+            reply_markup=get_main_keyboard()
+        )
+        del context.user_data['pending_operation']
     except Exception as e:
         logger.error(f"Error setting SL/TP: {e}")
         await update.message.reply_text("⚠️ Error interno al configurar SL/TP.")
