@@ -15,8 +15,8 @@ from supabase import create_client, Client
 
 # Configuración
 TOKEN = os.getenv("TELEGRAM_TOKEN")
-COINCAP_API_KEY = "c0b9354ec2c2d06d6395519f432b056c06f6340b62b72de1cf71a44ed9c6a36e"  # Nueva API Key
-COINCAP_API_URL = "https://api.coincap.io/v3"
+COINCAP_API_KEY = "c0b9354ec2c2d06d6395519f432b056c06f6340b62b72de1cf71a44ed9c6a36e"
+COINCAP_API_URL = "https://rest.coincap.io/v3"  # URL CORREGIDA v3
 MAX_DAILY_CHECKS = 10
 
 # Mapeo de activos
@@ -87,7 +87,7 @@ def get_credit_info(user_id):
         logger.error(f"Error getting credit info: {e}")
         return 0, MAX_DAILY_CHECKS
 
-# Obtener precio actual (CORREGIDO)
+# Obtener precio actual - API v3 CORREGIDA
 def get_current_price(asset_id, currency="USD"):
     try:
         coincap_id = ASSETS[asset_id]["coincap_id"]
@@ -95,6 +95,7 @@ def get_current_price(asset_id, currency="USD"):
             "Authorization": f"Bearer {COINCAP_API_KEY}",
             "Accept-Encoding": "gzip"
         }
+        # URL CORREGIDA para API v3
         url = f"{COINCAP_API_URL}/assets/{coincap_id}"
         
         logger.info(f"Requesting CoinCap price: {url}")
@@ -105,6 +106,7 @@ def get_current_price(asset_id, currency="USD"):
             logger.error(f"CoinCap API error: {response.status_code} - {response.text}")
             return None
         
+        # Estructura de respuesta API v3
         data = response.json().get("data", {})
         if not data:
             logger.error("CoinCap response missing 'data' field")
@@ -115,17 +117,31 @@ def get_current_price(asset_id, currency="USD"):
         
         if currency == "EUR":
             logger.info("Converting to EUR...")
-            eur_response = requests.get(f"{COINCAP_API_URL}/rates/euro", headers=headers)
+            # Endpoint CORREGIDO para tasas de conversión
+            eur_response = requests.get(
+                f"{COINCAP_API_URL}/rates?search=EUR", 
+                headers=headers
+            )
             if eur_response.status_code != 200:
                 logger.error(f"EUR conversion error: {eur_response.status_code} - {eur_response.text}")
                 return None
                 
-            eur_data = eur_response.json().get("data", {})
+            eur_data = eur_response.json().get("data", [])
             if not eur_data:
                 logger.error("EUR response missing 'data' field")
                 return None
                 
-            eur_rate = float(eur_data.get("rateUsd", 0))
+            # Buscamos el EUR en la lista de resultados
+            eur_rate = None
+            for rate in eur_data:
+                if rate.get("symbol") == "EUR":
+                    eur_rate = float(rate.get("rateUsd", 0))
+                    break
+                    
+            if eur_rate is None:
+                logger.error("EUR rate not found in response")
+                return None
+                
             logger.info(f"EUR conversion rate: {eur_rate}")
             
             if eur_rate == 0:
@@ -140,7 +156,7 @@ def get_current_price(asset_id, currency="USD"):
         logger.exception(f"EXCEPTION in get_current_price: {e}")
         return None
 
-# Obtener datos históricos (CORREGIDO)
+# Obtener datos históricos - API v3 CORREGIDA
 def get_historical_prices(asset_id, start_time, end_time, interval="m1"):
     try:
         coincap_id = ASSETS[asset_id]["coincap_id"]
@@ -152,6 +168,7 @@ def get_historical_prices(asset_id, start_time, end_time, interval="m1"):
         start_ms = int(start_time.timestamp() * 1000)
         end_ms = int(end_time.timestamp() * 1000)
         
+        # URL CORREGIDA para API v3
         url = f"{COINCAP_API_URL}/assets/{coincap_id}/history"
         params = {
             "interval": interval,
@@ -167,6 +184,7 @@ def get_historical_prices(asset_id, start_time, end_time, interval="m1"):
             logger.error(f"History API error: {response.status_code} - {response.text}")
             return None
         
+        # Estructura de respuesta API v3
         data = response.json().get("data", [])
         if not data:
             logger.error("Historical response has no data")
