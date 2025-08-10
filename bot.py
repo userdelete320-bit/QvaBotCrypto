@@ -756,7 +756,7 @@ async def check_operation(update: Update, context: ContextTypes.DEFAULT_TYPE, op
         message + credit_info,
         parse_mode="Markdown",
         reply_markup=get_operation_detail_keyboard(op_id, False))
-    )
+    
 
 # Main con webhook para Render
 def main():
