@@ -593,16 +593,33 @@ async def check_operation(update: Update, context: ContextTypes.DEFAULT_TYPE, op
         reply_markup=get_operation_detail_keyboard(op_id)
     )
 
-# Main
+# Main con webhook para Render
 def main():
+    # Obtener configuración de Render
+    PORT = int(os.environ.get('PORT', 10000))
+    WEBHOOK_URL = os.environ.get('WEBHOOK_URL', 'https://qvabotcrypto.onrender.com')
+    
+    # Crear aplicación
     application = Application.builder().token(TOKEN).build()
     
+    # Registrar handlers
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CallbackQueryHandler(button_click))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, set_sl_tp))
     
-    logger.info("🤖 Bot de Trading iniciado")
-    application.run_polling()
+    logger.info("🤖 Iniciando Bot de Trading en modo Webhook")
+    logger.info(f"🔗 URL del webhook: {WEBHOOK_URL}/{TOKEN}")
+    logger.info(f"🔌 Escuchando en puerto: {PORT}")
+    
+    # Configurar webhook
+    application.run_webhook(
+        listen="0.0.0.0",
+        port=PORT,
+        url_path=TOKEN,
+        webhook_url=f"{WEBHOOK_URL}/{TOKEN}",
+        cert=None,
+        drop_pending_updates=True
+    )
 
 if __name__ == "__main__":
     main()
