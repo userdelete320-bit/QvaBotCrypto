@@ -535,7 +535,7 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         await query.edit_message_text(
             f"{asset['emoji']} Selecciona la moneda para {asset['name']}:",
             reply_markup=get_currency_keyboard(asset_id))
-        )
+        
 
 # Handler para recibir SL/TP
 async def set_sl_tp(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
