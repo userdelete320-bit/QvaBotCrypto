@@ -17,7 +17,7 @@ from supabase import create_client, Client
 TOKEN = os.getenv("TELEGRAM_TOKEN")
 COINCAP_API_KEY = "b34066586e40c21753e4882ca3cd8f1cbab9037e0eb2e274f02d168a6c8f58f5"
 COINCAP_API_URL = "https://api.coincap.io/v3"
-MAX_DAILY_CHECKS = 80  # Límite de consultas diarias por usuario
+MAX_DAILY_CHECKS = 10  # Límite de consultas diarias por usuario
 
 # Mapeo de activos
 ASSETS = {
@@ -53,7 +53,7 @@ def check_credits(user_id):
         if response.data:
             count = response.data[0]["count"]
             return count < MAX_DAILY_CHECKS
-        return True  # Si no hay registro, puede usar
+        return True
     except Exception as e:
         logger.error(f"Error checking credits: {e}")
         return False
@@ -61,7 +61,6 @@ def check_credits(user_id):
 def log_credit_usage(user_id):
     today = datetime.utcnow().date().isoformat()
     try:
-        # Buscar registro existente
         response = supabase.table("credit_usage").select("*").eq("user_id", user_id).eq("date", today).execute()
         if response.data:
             record = response.data[0]
@@ -103,7 +102,6 @@ def get_current_price(asset_id, currency="USD"):
         usd_price = float(data["priceUsd"])
         
         if currency == "EUR":
-            # Obtener tasa de cambio USD a EUR
             eur_response = requests.get(f"{COINCAP_API_URL}/rates/euro", headers=headers)
             if eur_response.status_code != 200:
                 return None
@@ -117,12 +115,10 @@ def get_current_price(asset_id, currency="USD"):
 
 # Obtener datos históricos
 def get_historical_prices(asset_id, start_time, end_time, interval="m1"):
-    """Obtiene datos históricos de precios para un activo"""
     try:
         coincap_id = ASSETS[asset_id]["coincap_id"]
         headers = {"Authorization": f"Bearer {COINCAP_API_KEY}"}
         
-        # Convertir tiempos a milisegundos UNIX
         start_ms = int(start_time.timestamp() * 1000)
         end_ms = int(end_time.timestamp() * 1000)
         
@@ -145,7 +141,6 @@ def get_historical_prices(asset_id, start_time, end_time, interval="m1"):
 
 # Analizar si se tocó SL o TP
 def analyze_price_history(price_history, entry_price, sl_price, tp_price, operation_type):
-    """Analiza el historial de precios para determinar si se tocó SL o TP y cuál primero"""
     sl_touched = False
     tp_touched = False
     sl_time = None
@@ -153,9 +148,8 @@ def analyze_price_history(price_history, entry_price, sl_price, tp_price, operat
     
     for price_point in price_history:
         price = float(price_point["priceUsd"])
-        timestamp = price_point["time"]  # en milisegundos
+        timestamp = price_point["time"]
         
-        # Para operaciones de COMPRA
         if operation_type == "buy":
             if price <= sl_price and not sl_touched:
                 sl_touched = True
@@ -164,7 +158,6 @@ def analyze_price_history(price_history, entry_price, sl_price, tp_price, operat
                 tp_touched = True
                 tp_time = datetime.fromtimestamp(timestamp/1000)
         
-        # Para operaciones de VENTA
         elif operation_type == "sell":
             if price >= sl_price and not sl_touched:
                 sl_touched = True
@@ -173,14 +166,12 @@ def analyze_price_history(price_history, entry_price, sl_price, tp_price, operat
                 tp_touched = True
                 tp_time = datetime.fromtimestamp(timestamp/1000)
         
-        # Si ambos fueron tocados, determinar cuál primero
         if sl_touched and tp_touched:
             if sl_time < tp_time:
                 return "SL", sl_time
             else:
                 return "TP", tp_time
     
-    # Si solo uno fue tocado, retornar ese
     if sl_touched:
         return "SL", sl_time
     if tp_touched:
@@ -259,7 +250,6 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     
     data = query.data
     
-    # Navegación principal
     if data == "back_main":
         await query.edit_message_text(
             "💰 *Sistema de Trading de Criptoactivos* 💰\nSelecciona un activo para operar:",
@@ -267,7 +257,6 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             reply_markup=get_main_keyboard()
         )
     
-    # Selección de activo
     elif data.startswith("asset_"):
         asset_id = data.split('_')[1]
         await query.edit_message_text(
@@ -275,7 +264,6 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             reply_markup=get_currency_keyboard(asset_id)
         )
     
-    # Selección de moneda
     elif data.startswith("currency_"):
         _, asset_id, currency = data.split('_')
         price = get_current_price(asset_id, currency)
@@ -292,7 +280,6 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             reply_markup=get_trade_keyboard(asset_id, currency)
         )
     
-    # Registro de operación
     elif data.startswith("trade_"):
         _, asset_id, currency, operation_type = data.split('_')
         price = get_current_price(asset_id, currency)
@@ -301,7 +288,6 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             await query.edit_message_text("⚠️ Error al obtener precio. Intenta nuevamente.")
             return
         
-        # Guardar operación en Supabase
         try:
             operation_data = {
                 "user_id": user_id,
@@ -314,7 +300,6 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             response = supabase.table('operations').insert(operation_data).execute()
             if response.data:
                 op_id = response.data[0]['id']
-                # Guardar en contexto para esperar SL/TP
                 context.user_data['pending_operation'] = {
                     'id': op_id,
                     'asset_id': asset_id,
@@ -344,7 +329,6 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             parse_mode="Markdown"
         )
     
-    # Listado de operaciones
     elif data == "operations":
         await query.edit_message_text(
             "📊 *Tus Operaciones Pendientes* 📊",
@@ -352,7 +336,6 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             reply_markup=get_operations_keyboard(user_id)
         )
     
-    # Detalle de operación
     elif data.startswith("view_op_"):
         op_id = data.split('_')[2]
         try:
@@ -393,12 +376,10 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         else:
             await query.edit_message_text("⚠️ Operación no encontrada.")
     
-    # Comprobar resultado (con créditos y datos históricos)
     elif data.startswith("check_op_"):
         op_id = data.split('_')[2]
         await check_operation(update, context, op_id)
     
-    # Cerrar operación
     elif data.startswith("close_op_"):
         op_id = data.split('_')[2]
         try:
@@ -414,7 +395,6 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             reply_markup=get_main_keyboard()
         )
     
-    # Volver atrás desde moneda
     elif data.startswith("back_asset_"):
         asset_id = data.split('_')[2]
         await query.edit_message_text(
@@ -456,7 +436,6 @@ async def set_sl_tp(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await update.message.reply_text("Precios inválidos. Asegúrate de que sean números.")
         return
     
-    # Validar precios según tipo de operación
     if operation_type == "buy":
         if sl_price >= entry_price:
             await update.message.reply_text(f"❌ Para COMPRA, el Stop Loss debe ser menor que el precio de entrada ({entry_price:.4f})")
@@ -464,7 +443,7 @@ async def set_sl_tp(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         if tp_price <= entry_price:
             await update.message.reply_text(f"❌ Para COMPRA, el Take Profit debe ser mayor que el precio de entrada ({entry_price:.4f})")
             return
-    else:  # sell
+    else:
         if sl_price <= entry_price:
             await update.message.reply_text(f"❌ Para VENTA, el Stop Loss debe ser mayor que el precio de entrada ({entry_price:.4f})")
             return
@@ -472,7 +451,6 @@ async def set_sl_tp(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             await update.message.reply_text(f"❌ Para VENTA, el Take Profit debe ser menor que el precio de entrada ({entry_price:.4f})")
             return
     
-    # Actualizar la operación con SL y TP
     try:
         response = supabase.table('operations').update({
             "stop_loss": sl_price,
@@ -490,7 +468,6 @@ async def set_sl_tp(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                 parse_mode="Markdown",
                 reply_markup=get_main_keyboard()
             )
-            # Limpiar estado temporal
             del context.user_data['pending_operation']
         else:
             await update.message.reply_text("⚠️ Error al actualizar la operación. Intenta nuevamente.")
@@ -498,13 +475,12 @@ async def set_sl_tp(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         logger.error(f"Error setting SL/TP: {e}")
         await update.message.reply_text("⚠️ Error interno al configurar SL/TP.")
 
-# Función para comprobar operación (con uso de créditos y datos históricos)
+# Función para comprobar operación
 async def check_operation(update: Update, context: ContextTypes.DEFAULT_TYPE, op_id: int):
     query = update.callback_query
     user_id = query.from_user.id
     await query.answer()
     
-    # Verificar créditos
     if not check_credits(user_id):
         await query.edit_message_text(
             "⚠️ Has alcanzado tu límite diario de consultas. Inténtalo de nuevo mañana.",
@@ -512,7 +488,6 @@ async def check_operation(update: Update, context: ContextTypes.DEFAULT_TYPE, op
         )
         return
     
-    # Obtener datos de la operación
     try:
         response = supabase.table('operations').select("*").eq("id", op_id).execute()
         op_data = response.data[0] if response.data else None
@@ -528,17 +503,14 @@ async def check_operation(update: Update, context: ContextTypes.DEFAULT_TYPE, op
         await query.edit_message_text("⚠️ Esta operación no tiene SL/TP configurados.")
         return
     
-    # Obtener rango de tiempo
     start_time = datetime.fromisoformat(op_data['entry_time'])
     end_time = datetime.utcnow()
     
-    # Obtener datos históricos
     price_history = get_historical_prices(op_data['asset'], start_time, end_time, interval="m1")
     if not price_history:
         await query.edit_message_text("⚠️ Error al obtener datos históricos. Inténtalo más tarde.")
         return
     
-    # Analizar si se tocó SL o TP
     result, touch_time = analyze_price_history(
         price_history,
         op_data['entry_price'],
@@ -547,10 +519,8 @@ async def check_operation(update: Update, context: ContextTypes.DEFAULT_TYPE, op
         op_data['operation_type']
     )
     
-    # Registrar uso de crédito
     log_credit_usage(user_id)
     
-    # Preparar mensaje
     asset_info = ASSETS[op_data['asset']]
     symbol = asset_info['symbol']
     currency = op_data['currency']
@@ -566,9 +536,7 @@ async def check_operation(update: Update, context: ContextTypes.DEFAULT_TYPE, op
             f"• Tocado el: {touch_time.strftime('%Y-%m-%d %H:%M:%S')}\n\n"
             f"La operación se considera PERDIDA."
         )
-        # Actualizar operación como cerrada
         supabase.table('operations').update({"status": "cerrada"}).eq("id", op_id).execute()
-        # Registrar resultado
         supabase.table('results').insert({
             "operation_id": op_id,
             "exit_price": op_data['stop_loss'],
@@ -585,9 +553,7 @@ async def check_operation(update: Update, context: ContextTypes.DEFAULT_TYPE, op
             f"• Tocado el: {touch_time.strftime('%Y-%m-%d %H:%M:%S')}\n\n"
             f"¡FELICIDADES! La operación se considera GANADA."
         )
-        # Actualizar operación como cerrada
         supabase.table('operations').update({"status": "cerrada"}).eq("id", op_id).execute()
-        # Registrar resultado
         supabase.table('results').insert({
             "operation_id": op_id,
             "exit_price": op_data['take_profit'],
@@ -595,7 +561,6 @@ async def check_operation(update: Update, context: ContextTypes.DEFAULT_TYPE, op
         }).execute()
         
     else:
-        # Obtener precio actual para mostrar estado
         current_price = get_current_price(op_data['asset'], op_data['currency'])
         if current_price is None:
             await query.edit_message_text("⚠️ Error al obtener precio actual.")
@@ -622,7 +587,6 @@ async def check_operation(update: Update, context: ContextTypes.DEFAULT_TYPE, op
             f"ℹ️ No se ha alcanzado Stop Loss ni Take Profit."
         )
     
-    # Obtener info de créditos
     used, remaining = get_credit_info(user_id)
     credit_info = f"\n\n📊 Consultas usadas hoy: {used}/{MAX_DAILY_CHECKS} ({remaining} restantes)"
     
@@ -634,10 +598,8 @@ async def check_operation(update: Update, context: ContextTypes.DEFAULT_TYPE, op
 
 # Main
 def main():
-    # Inicializar bot
     application = Application.builder().token(TOKEN).build()
     
-    # Handlers
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CallbackQueryHandler(button_click))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, set_sl_tp))
