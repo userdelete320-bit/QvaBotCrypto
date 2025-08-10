@@ -1,7 +1,7 @@
 import os
 import logging
 import requests
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     Application,
@@ -16,21 +16,21 @@ from supabase import create_client, Client
 # Configuración
 TOKEN = os.getenv("TELEGRAM_TOKEN")
 COINCAP_API_KEY = "c0b9354ec2c2d06d6395519f432b056c06f6340b62b72de1cf71a44ed9c6a36e"
-COINCAP_API_URL = "https://rest.coincap.io/v3"  # URL CORREGIDA v3
+COINCAP_API_URL = "https://rest.coincap.io/v3"
 MAX_DAILY_CHECKS = 10
 
-# Mapeo de activos
+# Mapeo de activos con emojis
 ASSETS = {
-    "bitcoin": {"symbol": "BTC", "name": "Bitcoin", "coincap_id": "bitcoin"},
-    "ethereum": {"symbol": "ETH", "name": "Ethereum", "coincap_id": "ethereum"},
-    "binance-coin": {"symbol": "BNB", "name": "Binance Coin", "coincap_id": "binance-coin"},
-    "tether": {"symbol": "USDT", "name": "Tether", "coincap_id": "tether"},
-    "dai": {"symbol": "DAI", "name": "Dai", "coincap_id": "dai"},
-    "usd-coin": {"symbol": "USDC", "name": "USD Coin", "coincap_id": "usd-coin"},
-    "ripple": {"symbol": "XRP", "name": "XRP", "coincap_id": "ripple"},
-    "cardano": {"symbol": "ADA", "name": "Cardano", "coincap_id": "cardano"},
-    "solana": {"symbol": "SOL", "name": "Solana", "coincap_id": "solana"},
-    "dogecoin": {"symbol": "DOGE", "name": "Dogecoin", "coincap_id": "dogecoin"}
+    "bitcoin": {"symbol": "BTC", "name": "Bitcoin", "coincap_id": "bitcoin", "emoji": "🪙"},
+    "ethereum": {"symbol": "ETH", "name": "Ethereum", "coincap_id": "ethereum", "emoji": "🔷"},
+    "binance-coin": {"symbol": "BNB", "name": "Binance Coin", "coincap_id": "binance-coin", "emoji": "🅱️"},
+    "tether": {"symbol": "USDT", "name": "Tether", "coincap_id": "tether", "emoji": "💵"},
+    "dai": {"symbol": "DAI", "name": "Dai", "coincap_id": "dai", "emoji": "🌀"},
+    "usd-coin": {"symbol": "USDC", "name": "USD Coin", "coincap_id": "usd-coin", "emoji": "💲"},
+    "ripple": {"symbol": "XRP", "name": "XRP", "coincap_id": "ripple", "emoji": "✖️"},
+    "cardano": {"symbol": "ADA", "name": "Cardano", "coincap_id": "cardano", "emoji": "🅰️"},
+    "solana": {"symbol": "SOL", "name": "Solana", "coincap_id": "solana", "emoji": "☀️"},
+    "dogecoin": {"symbol": "DOGE", "name": "Dogecoin", "coincap_id": "dogecoin", "emoji": "🐶"}
 }
 
 # Configurar Supabase
@@ -87,7 +87,7 @@ def get_credit_info(user_id):
         logger.error(f"Error getting credit info: {e}")
         return 0, MAX_DAILY_CHECKS
 
-# Obtener precio actual - API v3 CORREGIDA
+# Obtener precio actual
 def get_current_price(asset_id, currency="USD"):
     try:
         coincap_id = ASSETS[asset_id]["coincap_id"]
@@ -95,7 +95,6 @@ def get_current_price(asset_id, currency="USD"):
             "Authorization": f"Bearer {COINCAP_API_KEY}",
             "Accept-Encoding": "gzip"
         }
-        # URL CORREGIDA para API v3
         url = f"{COINCAP_API_URL}/assets/{coincap_id}"
         
         logger.info(f"Requesting CoinCap price: {url}")
@@ -106,7 +105,6 @@ def get_current_price(asset_id, currency="USD"):
             logger.error(f"CoinCap API error: {response.status_code} - {response.text}")
             return None
         
-        # Estructura de respuesta API v3
         data = response.json().get("data", {})
         if not data:
             logger.error("CoinCap response missing 'data' field")
@@ -117,7 +115,6 @@ def get_current_price(asset_id, currency="USD"):
         
         if currency == "EUR":
             logger.info("Converting to EUR...")
-            # Endpoint CORREGIDO para tasas de conversión
             eur_response = requests.get(
                 f"{COINCAP_API_URL}/rates?search=EUR", 
                 headers=headers
@@ -131,7 +128,6 @@ def get_current_price(asset_id, currency="USD"):
                 logger.error("EUR response missing 'data' field")
                 return None
                 
-            # Buscamos el EUR en la lista de resultados
             eur_rate = None
             for rate in eur_data:
                 if rate.get("symbol") == "EUR":
@@ -156,7 +152,7 @@ def get_current_price(asset_id, currency="USD"):
         logger.exception(f"EXCEPTION in get_current_price: {e}")
         return None
 
-# Obtener datos históricos - API v3 CORREGIDA
+# Obtener datos históricos
 def get_historical_prices(asset_id, start_time, end_time, interval="m1"):
     try:
         coincap_id = ASSETS[asset_id]["coincap_id"]
@@ -168,7 +164,6 @@ def get_historical_prices(asset_id, start_time, end_time, interval="m1"):
         start_ms = int(start_time.timestamp() * 1000)
         end_ms = int(end_time.timestamp() * 1000)
         
-        # URL CORREGIDA para API v3
         url = f"{COINCAP_API_URL}/assets/{coincap_id}/history"
         params = {
             "interval": interval,
@@ -184,7 +179,6 @@ def get_historical_prices(asset_id, start_time, end_time, interval="m1"):
             logger.error(f"History API error: {response.status_code} - {response.text}")
             return None
         
-        # Estructura de respuesta API v3
         data = response.json().get("data", [])
         if not data:
             logger.error("Historical response has no data")
@@ -218,21 +212,21 @@ def analyze_price_history(price_history, entry_price, sl_price, tp_price, operat
         if operation_type == "buy":
             if price <= sl_price and not sl_touched:
                 sl_touched = True
-                sl_time = datetime.fromtimestamp(timestamp/1000)
+                sl_time = datetime.fromtimestamp(timestamp/1000, timezone.utc)
                 logger.info(f"SL touched at {price} - {sl_time}")
             if price >= tp_price and not tp_touched:
                 tp_touched = True
-                tp_time = datetime.fromtimestamp(timestamp/1000)
+                tp_time = datetime.fromtimestamp(timestamp/1000, timezone.utc)
                 logger.info(f"TP touched at {price} - {tp_time}")
         
         elif operation_type == "sell":
             if price >= sl_price and not sl_touched:
                 sl_touched = True
-                sl_time = datetime.fromtimestamp(timestamp/1000)
+                sl_time = datetime.fromtimestamp(timestamp/1000, timezone.utc)
                 logger.info(f"SL touched at {price} - {sl_time}")
             if price <= tp_price and not tp_touched:
                 tp_touched = True
-                tp_time = datetime.fromtimestamp(timestamp/1000)
+                tp_time = datetime.fromtimestamp(timestamp/1000, timezone.utc)
                 logger.info(f"TP touched at {price} - {tp_time}")
         
         if sl_touched and tp_touched:
@@ -257,14 +251,15 @@ def analyze_price_history(price_history, entry_price, sl_price, tp_price, operat
 def get_main_keyboard():
     buttons = []
     for asset_id, data in ASSETS.items():
-        buttons.append([InlineKeyboardButton(data["symbol"], callback_data=f"asset_{asset_id}")])
-    buttons.append([InlineKeyboardButton("📊 Operaciones", callback_data="operations")])
+        buttons.append([InlineKeyboardButton(f"{data['emoji']} {data['symbol']}", callback_data=f"asset_{asset_id}")])
+    buttons.append([InlineKeyboardButton("📊 Operaciones Activas", callback_data="operations")])
+    buttons.append([InlineKeyboardButton("📜 Historial Operaciones", callback_data="history")])
     return InlineKeyboardMarkup(buttons)
 
 def get_currency_keyboard(asset_id):
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("USD", callback_data=f"currency_{asset_id}_USD")],
-        [InlineKeyboardButton("EUR", callback_data=f"currency_{asset_id}_EUR")],
+        [InlineKeyboardButton("💵 USD", callback_data=f"currency_{asset_id}_USD")],
+        [InlineKeyboardButton("💶 EUR", callback_data=f"currency_{asset_id}_EUR")],
         [InlineKeyboardButton("🔙 Atrás", callback_data="back_main")]
     ])
 
@@ -294,20 +289,59 @@ def get_operations_keyboard(user_id):
         currency = op['currency']
         op_type = op['operation_type']
         price = op['entry_price']
-        btn_text = f"{ASSETS[asset_id]['symbol']} {op_type.upper()} {price:.2f} {currency}"
+        asset = ASSETS[asset_id]
+        btn_text = f"{asset['emoji']} {asset['symbol']} {'🟢' if op_type == 'buy' else '🔴'} {price:.2f} {currency}"
         buttons.append([InlineKeyboardButton(btn_text, callback_data=f"view_op_{op_id}")])
     
     buttons.append([InlineKeyboardButton("🔙 Menú Principal", callback_data="back_main")])
     return InlineKeyboardMarkup(buttons)
 
-def get_operation_detail_keyboard(op_id):
-    return InlineKeyboardMarkup([
-        [
-            InlineKeyboardButton("✅ Cerrar Operación", callback_data=f"close_op_{op_id}"),
-            InlineKeyboardButton("📈 Comprobar Resultado", callback_data=f"check_op_{op_id}")
-        ],
-        [InlineKeyboardButton("🔙 A Operaciones", callback_data="operations")]
-    ])
+def get_history_keyboard(user_id):
+    try:
+        response = supabase.table('operations').select(
+            "id, asset, currency, operation_type, entry_price, status, result"
+        ).eq("user_id", user_id).eq("status", "cerrada").order("entry_time", desc=True).limit(10).execute()
+        operations = response.data
+    except Exception as e:
+        logger.error(f"Error fetching history: {e}")
+        operations = []
+    
+    buttons = []
+    for op in operations:
+        op_id = op['id']
+        asset_id = op['asset']
+        currency = op['currency']
+        op_type = op['operation_type']
+        price = op['entry_price']
+        result = op.get('result', '')
+        asset = ASSETS[asset_id]
+        
+        if result == "profit":
+            result_emoji = "✅"
+        elif result == "loss":
+            result_emoji = "❌"
+        else:
+            result_emoji = "❓"
+            
+        btn_text = f"{result_emoji} {asset['emoji']} {asset['symbol']} {'🟢' if op_type == 'buy' else '🔴'} {price:.2f} {currency}"
+        buttons.append([InlineKeyboardButton(btn_text, callback_data=f"view_hist_{op_id}")])
+    
+    buttons.append([InlineKeyboardButton("🔙 Menú Principal", callback_data="back_main")])
+    return InlineKeyboardMarkup(buttons)
+
+def get_operation_detail_keyboard(op_id, is_history=False):
+    if is_history:
+        return InlineKeyboardMarkup([
+            [InlineKeyboardButton("🔙 A Historial", callback_data="history")]
+        ])
+    else:
+        return InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton("✅ Cerrar Operación", callback_data=f"close_op_{op_id}"),
+                InlineKeyboardButton("📈 Comprobar Resultado", callback_data=f"check_op_{op_id}")
+            ],
+            [InlineKeyboardButton("🔙 A Operaciones", callback_data="operations")]
+        ])
 
 # Handlers
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -333,13 +367,15 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     
     elif data.startswith("asset_"):
         asset_id = data.split('_')[1]
+        asset = ASSETS[asset_id]
         await query.edit_message_text(
-            f"Selecciona la moneda para {ASSETS[asset_id]['name']}:",
+            f"{asset['emoji']} Selecciona la moneda para {asset['name']}:",
             reply_markup=get_currency_keyboard(asset_id)
         )
     
     elif data.startswith("currency_"):
         _, asset_id, currency = data.split('_')
+        asset = ASSETS[asset_id]
         logger.info(f"Getting price for {asset_id} in {currency}")
         price = get_current_price(asset_id, currency)
         
@@ -349,8 +385,8 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             return
             
         await query.edit_message_text(
-            f"*{ASSETS[asset_id]['name']} ({ASSETS[asset_id]['symbol']})*\n"
-            f"Precio actual: `{price:,.2f} {currency}`\n\n"
+            f"*{asset['emoji']} {asset['name']} ({asset['symbol']})*\n"
+            f"💱 Precio actual: `{price:,.2f} {currency}`\n\n"
             "Selecciona el tipo de operación:",
             parse_mode="Markdown",
             reply_markup=get_trade_keyboard(asset_id, currency)
@@ -358,6 +394,7 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     
     elif data.startswith("trade_"):
         _, asset_id, currency, operation_type = data.split('_')
+        asset = ASSETS[asset_id]
         logger.info(f"Starting trade: {asset_id} {currency} {operation_type}")
         price = get_current_price(asset_id, currency)
         
@@ -395,8 +432,8 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         
         await query.edit_message_text(
             f"✅ *Operación registrada exitosamente!*\n\n"
-            f"• Activo: {ASSETS[asset_id]['name']} ({ASSETS[asset_id]['symbol']})\n"
-            f"• Tipo: {'COMPRA' if operation_type == 'buy' else 'VENTA'}\n"
+            f"• Activo: {asset['emoji']} {asset['name']} ({asset['symbol']})\n"
+            f"• Tipo: {'🟢 COMPRA' if operation_type == 'buy' else '🔴 VENTA'}\n"
             f"• Precio: {price:.2f} {currency}\n\n"
             f"Ahora, por favor establece el Stop Loss (SL) y Take Profit (TP).\n\n"
             f"Envía el mensaje en el formato:\n"
@@ -410,12 +447,19 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     
     elif data == "operations":
         await query.edit_message_text(
-            "📊 *Tus Operaciones Pendientes* 📊",
+            "📊 *Tus Operaciones Activas* 📊",
             parse_mode="Markdown",
             reply_markup=get_operations_keyboard(user_id)
         )
     
-    elif data.startswith("view_op_"):
+    elif data == "history":
+        await query.edit_message_text(
+            "📜 *Historial de Operaciones Cerradas* 📜",
+            parse_mode="Markdown",
+            reply_markup=get_history_keyboard(user_id))
+    
+    elif data.startswith("view_op_") or data.startswith("view_hist_"):
+        is_history = data.startswith("view_hist_")
         op_id = data.split('_')[2]
         logger.info(f"Viewing operation: {op_id}")
         try:
@@ -433,26 +477,34 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             entry_time = datetime.fromisoformat(op_data['entry_time']).strftime("%Y-%m-%d %H:%M:%S")
             asset = ASSETS[asset_id]
             
-            sl_info = f"SL: {op_data['stop_loss']:.4f}" if op_data.get('stop_loss') else "SL: No establecido"
-            tp_info = f"TP: {op_data['take_profit']:.4f}" if op_data.get('take_profit') else "TP: No establecido"
+            sl_info = f"🛑 SL: {op_data['stop_loss']:.4f}" if op_data.get('stop_loss') else "🛑 SL: No establecido"
+            tp_info = f"🎯 TP: {op_data['take_profit']:.4f}" if op_data.get('take_profit') else "🎯 TP: No establecido"
+            
+            status = op_data.get('status', 'pendiente')
+            status_emoji = "🟡 PENDIENTE" if status == "pendiente" else "🔴 CERRADA"
+            
+            result_info = ""
+            if 'result' in op_data:
+                if op_data['result'] == "profit":
+                    result_info = "\n🏆 Resultado: ✅ GANADA"
+                elif op_data['result'] == "loss":
+                    result_info = "\n🏆 Resultado: ❌ PERDIDA"
             
             message = (
                 f"*Detalle de Operación* #{op_id}\n\n"
-                f"• Activo: {asset['name']} ({asset['symbol']})\n"
+                f"• Activo: {asset['emoji']} {asset['name']} ({asset['symbol']})\n"
                 f"• Tipo: {'🟢 COMPRA' if op_type == 'buy' else '🔴 VENTA'}\n"
                 f"• Precio entrada: {price:.4f} {currency}\n"
                 f"• Hora entrada: {entry_time}\n"
                 f"• {sl_info}\n"
                 f"• {tp_info}\n\n"
-                f"Estado: 🟡 PENDIENTE\n\n"
-                f"Selecciona una acción:"
+                f"Estado: {status_emoji}{result_info}"
             )
             
             await query.edit_message_text(
                 message,
                 parse_mode="Markdown",
-                reply_markup=get_operation_detail_keyboard(op_id)
-            )
+                reply_markup=get_operation_detail_keyboard(op_id, is_history))
         else:
             await query.edit_message_text("⚠️ Operación no encontrada.")
     
@@ -479,9 +531,10 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     
     elif data.startswith("back_asset_"):
         asset_id = data.split('_')[2]
+        asset = ASSETS[asset_id]
         await query.edit_message_text(
-            f"Selecciona la moneda para {ASSETS[asset_id]['name']}:",
-            reply_markup=get_currency_keyboard(asset_id)
+            f"{asset['emoji']} Selecciona la moneda para {asset['name']}:",
+            reply_markup=get_currency_keyboard(asset_id))
         )
 
 # Handler para recibir SL/TP
@@ -499,6 +552,7 @@ async def set_sl_tp(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     currency = op_data['currency']
     operation_type = op_data['operation_type']
     entry_price = op_data['entry_price']
+    asset = ASSETS[asset_id]
     
     lines = text.split('\n')
     if len(lines) < 2:
@@ -540,12 +594,11 @@ async def set_sl_tp(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             "take_profit": tp_price
         }).eq("id", op_data['id']).execute()
         
-        asset_info = ASSETS[asset_id]
         await update.message.reply_text(
             f"✅ *Stop Loss y Take Profit configurados!*\n\n"
-            f"• Activo: {asset_info['name']} ({asset_info['symbol']})\n"
-            f"• Stop Loss: {sl_price:.4f} {currency}\n"
-            f"• Take Profit: {tp_price:.4f} {currency}\n\n"
+            f"• Activo: {asset['emoji']} {asset['name']} ({asset['symbol']})\n"
+            f"• 🛑 Stop Loss: {sl_price:.4f} {currency}\n"
+            f"• 🎯 Take Profit: {tp_price:.4f} {currency}\n\n"
             f"Operación lista para monitoreo.",
             parse_mode="Markdown",
             reply_markup=get_main_keyboard()
@@ -564,8 +617,7 @@ async def check_operation(update: Update, context: ContextTypes.DEFAULT_TYPE, op
     if not check_credits(user_id):
         await query.edit_message_text(
             "⚠️ Has alcanzado tu límite diario de consultas. Inténtalo de nuevo mañana.",
-            reply_markup=get_operation_detail_keyboard(op_id)
-        )
+            reply_markup=get_operation_detail_keyboard(op_id, False))
         return
     
     try:
@@ -583,8 +635,9 @@ async def check_operation(update: Update, context: ContextTypes.DEFAULT_TYPE, op
         await query.edit_message_text("⚠️ Esta operación no tiene SL/TP configurados.")
         return
     
-    start_time = datetime.fromisoformat(op_data['entry_time'])
-    end_time = datetime.utcnow()
+    # Convertir a UTC para evitar problemas de zona horaria
+    start_time = datetime.fromisoformat(op_data['entry_time']).astimezone(timezone.utc)
+    end_time = datetime.utcnow().replace(tzinfo=timezone.utc)
     
     # Para debugging: usar periodo más corto si es necesario
     if (end_time - start_time) > timedelta(hours=24):
@@ -612,42 +665,57 @@ async def check_operation(update: Update, context: ContextTypes.DEFAULT_TYPE, op
     currency = op_data['currency']
     entry_price = op_data['entry_price']
     
+    # Obtener precio actual para mostrar
+    current_price = get_current_price(op_data['asset'], op_data['currency'])
+    current_price_info = f"💰 Precio actual: {current_price:.4f} {currency}\n" if current_price else ""
+    
+    # Emoji de tendencia
+    trend_emoji = ""
+    if current_price:
+        if current_price > entry_price:
+            trend_emoji = "📈🟢"
+        elif current_price < entry_price:
+            trend_emoji = "📉🔴"
+        else:
+            trend_emoji = "➖⚪"
+    
     if result == "SL":
         message = (
             f"⚠️ *STOP LOSS ACTIVADO* ⚠️\n\n"
-            f"• Operación #{op_id} ({symbol})\n"
+            f"• Operación #{op_id} ({asset_info['emoji']} {symbol})\n"
             f"• Tipo: {'COMPRA' if op_data['operation_type'] == 'buy' else 'VENTA'}\n"
             f"• Precio entrada: {entry_price:.4f} {currency}\n"
-            f"• Stop Loss: {op_data['stop_loss']:.4f} {currency}\n"
+            f"• 🛑 Stop Loss: {op_data['stop_loss']:.4f} {currency}\n"
             f"• Tocado el: {touch_time.strftime('%Y-%m-%d %H:%M:%S')}\n\n"
-            f"La operación se considera PERDIDA."
+            f"{current_price_info}"
+            f"🏆 Resultado: ❌ PERDIDA {trend_emoji}"
         )
-        supabase.table('operations').update({"status": "cerrada"}).eq("id", op_id).execute()
-        supabase.table('results').insert({
-            "operation_id": op_id,
+        supabase.table('operations').update({
+            "status": "cerrada",
+            "result": "loss",
             "exit_price": op_data['stop_loss'],
-            "result": "loss"
-        }).execute()
+            "exit_time": datetime.utcnow().isoformat()
+        }).eq("id", op_id).execute()
         
     elif result == "TP":
         message = (
             f"🎯 *TAKE PROFIT ACTIVADO* 🎯\n\n"
-            f"• Operación #{op_id} ({symbol})\n"
+            f"• Operación #{op_id} ({asset_info['emoji']} {symbol})\n"
             f"• Tipo: {'COMPRA' if op_data['operation_type'] == 'buy' else 'VENTA'}\n"
             f"• Precio entrada: {entry_price:.4f} {currency}\n"
-            f"• Take Profit: {op_data['take_profit']:.4f} {currency}\n"
+            f"• 🎯 Take Profit: {op_data['take_profit']:.4f} {currency}\n"
             f"• Tocado el: {touch_time.strftime('%Y-%m-%d %H:%M:%S')}\n\n"
-            f"¡FELICIDADES! La operación se considera GANADA."
+            f"{current_price_info}"
+            f"🏆 Resultado: ✅ GANADA {trend_emoji}"
         )
-        supabase.table('operations').update({"status": "cerrada"}).eq("id", op_id).execute()
-        supabase.table('results').insert({
-            "operation_id": op_id,
+        supabase.table('operations').update({
+            "status": "cerrada",
+            "result": "profit",
             "exit_price": op_data['take_profit'],
-            "result": "profit"
+            "exit_time": datetime.utcnow().isoformat()
         }).execute()
         
     else:
-        current_price = get_current_price(op_data['asset'], op_data['currency'])
         if current_price is None:
             await query.edit_message_text("⚠️ Error al obtener precio actual.")
             return
@@ -659,17 +727,25 @@ async def check_operation(update: Update, context: ContextTypes.DEFAULT_TYPE, op
             price_diff = -price_diff
             percentage = -percentage
             
-        result_status = "🟢 GANANCIA" if price_diff > 0 else "🔴 PÉRDIDA" if price_diff < 0 else "⚪ SIN CAMBIO"
+        if price_diff > 0:
+            arrow = "⬆️🟢"
+            result_status = "GANANCIA"
+        elif price_diff < 0:
+            arrow = "⬇️🔴"
+            result_status = "PÉRDIDA"
+        else:
+            arrow = "➖⚪"
+            result_status = "SIN CAMBIO"
         
         message = (
             f"📊 *Estado Actual de la Operación* #{op_id}\n\n"
-            f"• Activo: {symbol}\n"
+            f"• Activo: {asset_info['emoji']} {symbol}\n"
             f"• Tipo: {'VENTA' if op_data['operation_type'] == 'sell' else 'COMPRA'}\n"
             f"• Precio entrada: {entry_price:.4f} {currency}\n"
-            f"• Precio actual: {current_price:.4f} {currency}\n"
-            f"• Diferencia: {price_diff:.4f} {currency}\n"
-            f"• Porcentaje: {percentage:.2f}%\n\n"
-            f"Resultado: {result_status}\n\n"
+            f"• 💰 Precio actual: {current_price:.4f} {currency} {arrow}\n"
+            f"• Diferencia: {price_diff:+.4f} {currency}\n"
+            f"• Porcentaje: {percentage:+.2f}%\n\n"
+            f"🏆 Resultado: {result_status}\n\n"
             f"ℹ️ No se ha alcanzado Stop Loss ni Take Profit."
         )
     
@@ -679,7 +755,7 @@ async def check_operation(update: Update, context: ContextTypes.DEFAULT_TYPE, op
     await query.edit_message_text(
         message + credit_info,
         parse_mode="Markdown",
-        reply_markup=get_operation_detail_keyboard(op_id)
+        reply_markup=get_operation_detail_keyboard(op_id, False))
     )
 
 # Main con webhook para Render
