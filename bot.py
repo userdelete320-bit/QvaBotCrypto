@@ -298,9 +298,10 @@ def get_operations_keyboard(user_id):
 
 def get_history_keyboard(user_id):
     try:
+        # Obtener todas las operaciones cerradas con su resultado
         response = supabase.table('operations').select(
-            "id, asset, currency, operation_type, entry_price, status, result"
-        ).eq("user_id", user_id).eq("status", "cerrada").order("entry_time", desc=True).limit(10).execute()
+            "id, asset, currency, operation_type, entry_price, result, exit_price, exit_time"
+        ).eq("user_id", user_id).eq("status", "cerrada").order("exit_time", desc=True).limit(10).execute()
         operations = response.data
     except Exception as e:
         logger.error(f"Error fetching history: {e}")
@@ -316,13 +317,14 @@ def get_history_keyboard(user_id):
         result = op.get('result', '')
         asset = ASSETS[asset_id]
         
+        # Determinar emoji según resultado
         if result == "profit":
             result_emoji = "✅"
         elif result == "loss":
             result_emoji = "❌"
         else:
-            result_emoji = "❓"
-            
+            result_emoji = "🟣"  # Cerrada manualmente
+        
         btn_text = f"{result_emoji} {asset['emoji']} {asset['symbol']} {'🟢' if op_type == 'buy' else '🔴'} {price:.2f} {currency}"
         buttons.append([InlineKeyboardButton(btn_text, callback_data=f"view_hist_{op_id}")])
     
@@ -410,7 +412,8 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
                 "currency": currency,
                 "operation_type": operation_type,
                 "entry_price": price,
-                "entry_time": datetime.utcnow().isoformat()
+                "entry_time": datetime.utcnow().isoformat(),
+                "status": "pendiente"  # Estado inicial
             }
             response = supabase.table('operations').insert(operation_data).execute()
             if response.data:
@@ -483,12 +486,23 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             status = op_data.get('status', 'pendiente')
             status_emoji = "🟡 PENDIENTE" if status == "pendiente" else "🔴 CERRADA"
             
+            # Información de cierre
+            close_info = ""
+            if 'exit_price' in op_data and op_data['exit_price']:
+                close_info = f"\n• Precio salida: {op_data['exit_price']:.4f} {currency}"
+            
+            if 'exit_time' in op_data and op_data['exit_time']:
+                close_time = datetime.fromisoformat(op_data['exit_time']).strftime("%Y-%m-%d %H:%M:%S")
+                close_info += f"\n• Hora salida: {close_time}"
+            
+            # Información de resultado
             result_info = ""
-            if 'result' in op_data:
-                if op_data['result'] == "profit":
-                    result_info = "\n🏆 Resultado: ✅ GANADA"
-                elif op_data['result'] == "loss":
-                    result_info = "\n🏆 Resultado: ❌ PERDIDA"
+            if op_data.get('result') == "profit":
+                result_info = "\n🏆 Resultado: ✅ GANADA"
+            elif op_data.get('result') == "loss":
+                result_info = "\n🏆 Resultado: ❌ PERDIDA"
+            elif op_data.get('result') == "manual":
+                result_info = "\n🏆 Resultado: 🟣 CERRADA MANUALMENTE"
             
             message = (
                 f"*Detalle de Operación* #{op_id}\n\n"
@@ -497,7 +511,8 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
                 f"• Precio entrada: {price:.4f} {currency}\n"
                 f"• Hora entrada: {entry_time}\n"
                 f"• {sl_info}\n"
-                f"• {tp_info}\n\n"
+                f"• {tp_info}"
+                f"{close_info}\n\n"
                 f"Estado: {status_emoji}{result_info}"
             )
             
@@ -517,14 +532,27 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         op_id = data.split('_')[2]
         logger.info(f"Closing operation: {op_id}")
         try:
-            supabase.table('operations').update({"status": "cerrada"}).eq("id", op_id).execute()
+            # Obtener precio actual para registrar el cierre
+            op_data = supabase.table('operations').select("*").eq("id", op_id).execute().data[0]
+            asset_id = op_data['asset']
+            currency = op_data['currency']
+            current_price = get_current_price(asset_id, currency)
+            
+            # Actualizar operación como cerrada manualmente
+            supabase.table('operations').update({
+                "status": "cerrada",
+                "result": "manual",
+                "exit_price": current_price,
+                "exit_time": datetime.utcnow().isoformat()
+            }).eq("id", op_id).execute()
         except Exception as e:
             logger.error(f"Error closing operation: {e}")
             await query.edit_message_text("⚠️ Error al cerrar la operación.")
             return
         
         await query.edit_message_text(
-            f"✅ *Operación #{op_id} cerrada exitosamente!*",
+            f"✅ *Operación #{op_id} cerrada exitosamente!*\n"
+            f"• Precio de cierre: {current_price:.4f} {currency}",
             parse_mode="Markdown",
             reply_markup=get_main_keyboard()
         )
@@ -535,7 +563,7 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         await query.edit_message_text(
             f"{asset['emoji']} Selecciona la moneda para {asset['name']}:",
             reply_markup=get_currency_keyboard(asset_id))
-        
+        )
 
 # Handler para recibir SL/TP
 async def set_sl_tp(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -694,7 +722,7 @@ async def check_operation(update: Update, context: ContextTypes.DEFAULT_TYPE, op
             "status": "cerrada",
             "result": "loss",
             "exit_price": op_data['stop_loss'],
-            "exit_time": datetime.utcnow().isoformat()
+            "exit_time": touch_time.isoformat()
         }).eq("id", op_id).execute()
         
     elif result == "TP":
@@ -712,7 +740,7 @@ async def check_operation(update: Update, context: ContextTypes.DEFAULT_TYPE, op
             "status": "cerrada",
             "result": "profit",
             "exit_price": op_data['take_profit'],
-            "exit_time": datetime.utcnow().isoformat()
+            "exit_time": touch_time.isoformat()
         }).execute()
         
     else:
@@ -756,7 +784,7 @@ async def check_operation(update: Update, context: ContextTypes.DEFAULT_TYPE, op
         message + credit_info,
         parse_mode="Markdown",
         reply_markup=get_operation_detail_keyboard(op_id, False))
-    
+    )
 
 # Main con webhook para Render
 def main():
