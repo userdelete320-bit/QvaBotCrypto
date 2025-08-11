@@ -51,7 +51,7 @@ logger = logging.getLogger(__name__)
 
 # Gestión de créditos
 def check_credits(user_id):
-    today = datetime.utcnow().date()
+    today = datetime.now(timezone.utc).date()
     try:
         response = supabase.table("credit_usage").select("count").eq("user_id", user_id).eq("date", today.isoformat()).execute()
         if response.data:
@@ -63,7 +63,7 @@ def check_credits(user_id):
         return False
 
 def log_credit_usage(user_id):
-    today = datetime.utcnow().date().isoformat()
+    today = datetime.now(timezone.utc).date().isoformat()
     try:
         response = supabase.table("credit_usage").select("*").eq("user_id", user_id).eq("date", today).execute()
         if response.data:
@@ -80,7 +80,7 @@ def log_credit_usage(user_id):
         logger.error(f"Error logging credit usage: {e}")
 
 def get_credit_info(user_id):
-    today = datetime.utcnow().date().isoformat()
+    today = datetime.now(timezone.utc).date().isoformat()
     try:
         response = supabase.table("credit_usage").select("count").eq("user_id", user_id).eq("date", today).execute()
         if response.data:
@@ -437,7 +437,7 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
                 "currency": currency,
                 "operation_type": operation_type,
                 "entry_price": price,
-                "entry_time": datetime.utcnow().isoformat(),
+                "entry_time": datetime.now(timezone.utc).isoformat(),
                 "status": "pendiente"
             }
             response = supabase.table('operations').insert(operation_data).execute()
@@ -579,7 +579,7 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
                 "status": "cerrada",
                 "result": "manual",
                 "exit_price": current_price,
-                "exit_time": datetime.utcnow().isoformat()
+                "exit_time": datetime.now(timezone.utc).isoformat()
             }).eq("id", op_id).execute()
             
             await query.edit_message_text(
@@ -699,7 +699,7 @@ async def check_operation(update: Update, context: ContextTypes.DEFAULT_TYPE, op
     
     # Convertir a UTC para evitar problemas de zona horaria
     start_time = datetime.fromisoformat(op_data['entry_time']).astimezone(timezone.utc)
-    end_time = datetime.utcnow().replace(tzinfo=timezone.utc)
+    end_time = datetime.now(timezone.utc)
     
     # Para debugging: usar periodo más corto si es necesario
     if (end_time - start_time) > timedelta(hours=24):
@@ -712,13 +712,44 @@ async def check_operation(update: Update, context: ContextTypes.DEFAULT_TYPE, op
         await query.edit_message_text("⚠️ Error al obtener datos históricos. Inténtalo más tarde.")
         return
     
-    result, touch_time = analyze_price_history(
-        price_history,
-        op_data['entry_price'],
-        op_data['stop_loss'],
-        op_data['take_profit'],
-        op_data['operation_type']
-    )
+    # Obtener precio actual para detección en tiempo real
+    current_price = get_current_price(op_data['asset'], op_data['currency'])
+    if current_price is None:
+        await query.edit_message_text("⚠️ Error al obtener precio actual.")
+        return
+    
+    # Primero verificar si el precio ACTUAL alcanza SL/TP
+    operation_type = op_data['operation_type']
+    sl_price = op_data['stop_loss']
+    tp_price = op_data['take_profit']
+    current_touch = None
+    
+    if operation_type == "buy":
+        if current_price <= sl_price:
+            current_touch = ("SL", datetime.now(timezone.utc))
+            logger.info(f"Precio ACTUAL activó SL a {current_price}")
+        elif current_price >= tp_price:
+            current_touch = ("TP", datetime.now(timezone.utc))
+            logger.info(f"Precio ACTUAL activó TP a {current_price}")
+    else:  # sell
+        if current_price >= sl_price:
+            current_touch = ("SL", datetime.now(timezone.utc))
+            logger.info(f"Precio ACTUAL activó SL a {current_price}")
+        elif current_price <= tp_price:
+            current_touch = ("TP", datetime.now(timezone.utc))
+            logger.info(f"Precio ACTUAL activó TP a {current_price}")
+    
+    # Si no se activó con el precio actual, analizar histórico
+    if current_touch:
+        result, touch_time = current_touch
+    else:
+        result, touch_time = analyze_price_history(
+            price_history,
+            op_data['entry_price'],
+            sl_price,
+            tp_price,
+            operation_type
+        )
     
     log_credit_usage(user_id)
     
@@ -726,12 +757,6 @@ async def check_operation(update: Update, context: ContextTypes.DEFAULT_TYPE, op
     symbol = asset_info['symbol']
     currency = op_data['currency']
     entry_price = op_data['entry_price']
-    
-    # Obtener precio actual para mostrar
-    current_price = get_current_price(op_data['asset'], op_data['currency'])
-    if current_price is None:
-        await query.edit_message_text("⚠️ Error al obtener precio actual.")
-        return
     
     # Emoji de tendencia
     trend_emoji = ""
@@ -743,61 +768,72 @@ async def check_operation(update: Update, context: ContextTypes.DEFAULT_TYPE, op
         trend_emoji = "➖⚪"
     
     # Calcular distancia a SL y TP
-    if op_data['operation_type'] == "buy":
-        to_sl = entry_price - op_data['stop_loss']
-        to_tp = op_data['take_profit'] - entry_price
-        current_to_sl = current_price - op_data['stop_loss']
-        current_to_tp = op_data['take_profit'] - current_price
+    if operation_type == "buy":
+        to_sl = entry_price - sl_price
+        to_tp = tp_price - entry_price
+        current_to_sl = current_price - sl_price
+        current_to_tp = tp_price - current_price
     else:  # sell
-        to_sl = op_data['stop_loss'] - entry_price
-        to_tp = entry_price - op_data['take_profit']
-        current_to_sl = op_data['stop_loss'] - current_price
-        current_to_tp = current_price - op_data['take_profit']
+        to_sl = sl_price - entry_price
+        to_tp = entry_price - tp_price
+        current_to_sl = sl_price - current_price
+        current_to_tp = current_price - tp_price
     
     sl_percentage = (current_to_sl / to_sl) * 100 if to_sl != 0 else 0
     tp_percentage = (current_to_tp / to_tp) * 100 if to_tp != 0 else 0
+    
+    # Determinar precio de salida
+    exit_price = None
+    if result == "SL":
+        exit_price = sl_price
+    elif result == "TP":
+        exit_price = tp_price
     
     if result == "SL":
         message = (
             f"⚠️ *STOP LOSS ACTIVADO* ⚠️\n\n"
             f"• Operación #{op_id} ({asset_info['emoji']} {symbol})\n"
-            f"• Tipo: {'COMPRA' if op_data['operation_type'] == 'buy' else 'VENTA'}\n"
+            f"• Tipo: {'COMPRA' if operation_type == 'buy' else 'VENTA'}\n"
             f"• Precio entrada: {entry_price:.4f} {currency}\n"
-            f"• 🛑 Stop Loss: {op_data['stop_loss']:.4f} {currency}\n"
-            f"• 🎯 Take Profit: {op_data['take_profit']:.4f} {currency}\n"
+            f"• 🛑 Stop Loss: {sl_price:.4f} {currency}\n"
+            f"• 🎯 Take Profit: {tp_price:.4f} {currency}\n"
             f"• Tocado el: {touch_time.strftime('%Y-%m-%d %H:%M:%S')}\n\n"
             f"🏆 Resultado: ❌ PERDIDA {trend_emoji}"
         )
-        supabase.table('operations').update({
+        # Actualizar operación como cerrada
+        update_data = {
             "status": "cerrada",
             "result": "loss",
-            "exit_price": op_data['stop_loss'],
+            "exit_price": exit_price,
             "exit_time": touch_time.isoformat()
-        }).eq("id", op_id).execute()
+        }
+        supabase.table('operations').update(update_data).eq("id", op_id).execute()
         
     elif result == "TP":
         message = (
             f"🎯 *TAKE PROFIT ACTIVADO* 🎯\n\n"
             f"• Operación #{op_id} ({asset_info['emoji']} {symbol})\n"
-            f"• Tipo: {'COMPRA' if op_data['operation_type'] == 'buy' else 'VENTA'}\n"
+            f"• Tipo: {'COMPRA' if operation_type == 'buy' else 'VENTA'}\n"
             f"• Precio entrada: {entry_price:.4f} {currency}\n"
-            f"• 🛑 Stop Loss: {op_data['stop_loss']:.4f} {currency}\n"
-            f"• 🎯 Take Profit: {op_data['take_profit']:.4f} {currency}\n"
+            f"• 🛑 Stop Loss: {sl_price:.4f} {currency}\n"
+            f"• 🎯 Take Profit: {tp_price:.4f} {currency}\n"
             f"• Tocado el: {touch_time.strftime('%Y-%m-%d %H:%M:%S')}\n\n"
             f"🏆 Resultado: ✅ GANADA {trend_emoji}"
         )
-        supabase.table('operations').update({
+        # Actualizar operación como cerrada
+        update_data = {
             "status": "cerrada",
             "result": "profit",
-            "exit_price": op_data['take_profit'],
+            "exit_price": exit_price,
             "exit_time": touch_time.isoformat()
-        }).execute()
+        }
+        supabase.table('operations').update(update_data).eq("id", op_id).execute()
         
     else:
         price_diff = current_price - entry_price
         percentage = (price_diff / entry_price) * 100
         
-        if op_data['operation_type'] == "sell":
+        if operation_type == "sell":
             price_diff = -price_diff
             percentage = -percentage
             
@@ -813,16 +849,16 @@ async def check_operation(update: Update, context: ContextTypes.DEFAULT_TYPE, op
         
         # Mostrar SL y TP en el estado actual
         sl_tp_info = (
-            f"• 🛑 Stop Loss: {op_data['stop_loss']:.4f} {currency}\n"
+            f"• 🛑 Stop Loss: {sl_price:.4f} {currency}\n"
             f"   - Distancia: {current_to_sl:.4f} ({sl_percentage:.1f}%)\n"
-            f"• 🎯 Take Profit: {op_data['take_profit']:.4f} {currency}\n"
+            f"• 🎯 Take Profit: {tp_price:.4f} {currency}\n"
             f"   - Distancia: {current_to_tp:.4f} ({tp_percentage:.1f}%)\n"
         )
         
         message = (
             f"📊 *Estado Actual de la Operación* #{op_id}\n\n"
             f"• Activo: {asset_info['emoji']} {symbol}\n"
-            f"• Tipo: {'VENTA' if op_data['operation_type'] == 'sell' else 'COMPRA'}\n"
+            f"• Tipo: {'VENTA' if operation_type == 'sell' else 'COMPRA'}\n"
             f"• Precio entrada: {entry_price:.4f} {currency}\n"
             f"• 💰 Precio actual: {current_price:.4f} {currency} {arrow}\n"
             f"• Diferencia: {price_diff:+.4f} {currency}\n"
