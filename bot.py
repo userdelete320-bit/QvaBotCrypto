@@ -1,6 +1,7 @@
 import os
 import logging
 import requests
+import jwt
 from datetime import datetime, timedelta, timezone
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
@@ -12,12 +13,17 @@ from telegram.ext import (
     filters
 )
 from supabase import create_client, Client
+from pip_calculator import calcular_valor_pip, calcular_ganancia_pips, calcular_pips_movidos
 
 # Configuración
 TOKEN = os.getenv("TELEGRAM_TOKEN")
+ADMIN_ID = 5376388604  # Tu ID de administrador
 COINCAP_API_KEY = "c0b9354ec2c2d06d6395519f432b056c06f6340b62b72de1cf71a44ed9c6a36e"
 COINCAP_API_URL = "https://rest.coincap.io/v3"
-MAX_DAILY_CHECKS = 80  # 80 consultas diarias
+MAX_DAILY_CHECKS = 80
+JWT_SECRET = os.getenv("JWT_SECRET", "mE9fG7qX2sVpYtRwA1zB4cD5eF6gH7jK8lL9mN0oP1iQ2jR3kS4lT5mU6nV7oW8pX9")
+MIN_DEPOSITO = 3000  # Mínimo de depósito en CUP
+CUP_RATE = 440  # Tasa fija de USDT a CUP
 
 # Mapeo de activos (solo criptomonedas)
 ASSETS = {
@@ -40,7 +46,7 @@ ASSETS = {
 # Configurar Supabase
 SUPABASE_URL = "https://xowsmpukhedukeoqcreb.supabase.co"
 SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Inhvd3NtcHVraGVkdWtlb3FjcmViIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTQ4MzkwNDEsImV4cCI6MjA3MDQxNTA0MX0.zy1rCXPfuNQ95Bk0ATTkdF6DGLB9DhG9EjaBr0v3c0M"
-supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
+supabase_anon = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 # Configurar logging
 logging.basicConfig(
@@ -49,11 +55,114 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# Función para crear cliente Supabase autenticado con JWT
+def get_auth_supabase(user_id: str) -> Client:
+    # Crear token JWT
+    payload = {
+        "sub": user_id,
+        "role": "authenticated",
+        "exp": datetime.now(timezone.utc) + timedelta(minutes=30)
+    }
+    token = jwt.encode(payload, JWT_SECRET, algorithm="HS256")
+    return create_client(SUPABASE_URL, SUPABASE_KEY, {
+        'global': {
+            'headers': {
+                'Authorization': f'Bearer {token}'
+            }
+        }
+    })
+
+# Gestión de saldo
+def obtener_saldo(user_id: str) -> float:
+    try:
+        auth_supabase = get_auth_supabase(user_id)
+        response = auth_supabase.table('balance').select('saldo').eq('user_id', user_id).execute()
+        if response.data:
+            return response.data[0]['saldo']
+        else:
+            # Si no existe, crea un registro con saldo 0
+            auth_supabase.table('balance').insert({'user_id': user_id, 'saldo': 0}).execute()
+            return 0.0
+    except Exception as e:
+        logger.error(f"Error obteniendo saldo: {e}")
+        return 0.0
+
+def actualizar_saldo(user_id: str, monto: float) -> float:
+    try:
+        auth_supabase = get_auth_supabase(user_id)
+        saldo_actual = obtener_saldo(user_id)
+        nuevo_saldo = saldo_actual + monto
+        
+        auth_supabase.table('balance').update({'saldo': nuevo_saldo}).eq('user_id', user_id).execute()
+        return nuevo_saldo
+    except Exception as e:
+        logger.error(f"Error actualizando saldo: {e}")
+        return saldo_actual
+
+# Crear solicitud de depósito/retiro
+def crear_solicitud(user_id: str, tipo: str, monto: float, comprobante: str = None, datos: str = None) -> int:
+    try:
+        auth_supabase = get_auth_supabase(user_id)
+        solicitud_data = {
+            'user_id': user_id,
+            'tipo': tipo,
+            'monto': monto,
+            'estado': 'pendiente',
+            'fecha_solicitud': datetime.now(timezone.utc).isoformat()
+        }
+        if comprobante:
+            solicitud_data['comprobante'] = comprobante
+        if datos:
+            solicitud_data['datos'] = datos
+
+        response = auth_supabase.table('solicitudes').insert(solicitud_data).execute()
+        return response.data[0]['id'] if response.data else None
+    except Exception as e:
+        logger.error(f"Error creando solicitud: {e}")
+        return None
+
+# Actualizar estado de solicitud
+def actualizar_solicitud(solicitud_id: int, estado: str, motivo: str = None, admin_id: str = None) -> bool:
+    try:
+        auth_supabase = get_auth_supabase(admin_id) if admin_id else get_auth_supabase(ADMIN_ID)
+        update_data = {
+            'estado': estado,
+            'fecha_resolucion': datetime.now(timezone.utc).isoformat()
+        }
+        if motivo:
+            update_data['motivo_rechazo'] = motivo
+
+        auth_supabase.table('solicitudes').update(update_data).eq('id', solicitud_id).execute()
+        return True
+    except Exception as e:
+        logger.error(f"Error actualizando solicitud: {e}")
+        return False
+
+# Teclado para admin
+def get_admin_keyboard(solicitud_id: int, tipo: str) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("✅ Aprobar", callback_data=f"apr_{tipo}_{solicitud_id}"),
+            InlineKeyboardButton("❌ Rechazar", callback_data=f"rej_{tipo}_{solicitud_id}")
+        ]
+    ])
+
+# Teclado para acciones de balance
+def get_balance_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("⬆️ Depositar", callback_data="depositar"),
+            InlineKeyboardButton("⬇️ Retirar", callback_data="retirar")
+        ],
+        [InlineKeyboardButton("🔙 Menú Principal", callback_data="back_main")]
+    ])
+
 # Gestión de créditos
-def check_credits(user_id):
+def check_credits(user_id: str) -> bool:
+    auth_supabase = get_auth_supabase(user_id)
     today = datetime.now(timezone.utc).date()
     try:
-        response = supabase.table("credit_usage").select("count").eq("user_id", user_id).eq("date", today.isoformat()).execute()
+        response = auth_supabase.table("credit_usage").select("count").eq("user_id", user_id).eq("date", today.isoformat()).execute()
         if response.data:
             count = response.data[0]["count"]
             return count < MAX_DAILY_CHECKS
@@ -62,16 +171,17 @@ def check_credits(user_id):
         logger.error(f"Error checking credits: {e}")
         return False
 
-def log_credit_usage(user_id):
+def log_credit_usage(user_id: str) -> None:
+    auth_supabase = get_auth_supabase(user_id)
     today = datetime.now(timezone.utc).date().isoformat()
     try:
-        response = supabase.table("credit_usage").select("*").eq("user_id", user_id).eq("date", today).execute()
+        response = auth_supabase.table("credit_usage").select("*").eq("user_id", user_id).eq("date", today).execute()
         if response.data:
             record = response.data[0]
             new_count = record["count"] + 1
-            supabase.table("credit_usage").update({"count": new_count}).eq("id", record["id"]).execute()
+            auth_supabase.table("credit_usage").update({"count": new_count}).eq("id", record["id"]).execute()
         else:
-            supabase.table("credit_usage").insert({
+            auth_supabase.table("credit_usage").insert({
                 "user_id": user_id,
                 "date": today,
                 "count": 1
@@ -79,10 +189,11 @@ def log_credit_usage(user_id):
     except Exception as e:
         logger.error(f"Error logging credit usage: {e}")
 
-def get_credit_info(user_id):
+def get_credit_info(user_id: str) -> tuple:
+    auth_supabase = get_auth_supabase(user_id)
     today = datetime.now(timezone.utc).date().isoformat()
     try:
-        response = supabase.table("credit_usage").select("count").eq("user_id", user_id).eq("date", today).execute()
+        response = auth_supabase.table("credit_usage").select("count").eq("user_id", user_id).eq("date", today).execute()
         if response.data:
             count = response.data[0]["count"]
             return count, MAX_DAILY_CHECKS - count
@@ -92,7 +203,7 @@ def get_credit_info(user_id):
         return 0, MAX_DAILY_CHECKS
 
 # Obtener precio actual
-def get_current_price(asset_id, currency="USD"):
+def get_current_price(asset_id: str, currency: str = "USD") -> float:
     try:
         coincap_id = ASSETS[asset_id]["coincap_id"]
         headers = {
@@ -116,48 +227,14 @@ def get_current_price(asset_id, currency="USD"):
             
         usd_price = float(data.get("priceUsd", 0))
         logger.info(f"USD price for {coincap_id}: {usd_price}")
-        
-        if currency == "EUR":
-            logger.info("Converting to EUR...")
-            eur_response = requests.get(
-                f"{COINCAP_API_URL}/rates?search=EUR", 
-                headers=headers
-            )
-            if eur_response.status_code != 200:
-                logger.error(f"EUR conversion error: {eur_response.status_code} - {eur_response.text}")
-                return None
-                
-            eur_data = eur_response.json().get("data", [])
-            if not eur_data:
-                logger.error("EUR response missing 'data' field")
-                return None
-                
-            eur_rate = None
-            for rate in eur_data:
-                if rate.get("symbol") == "EUR":
-                    eur_rate = float(rate.get("rateUsd", 0))
-                    break
-                    
-            if eur_rate is None:
-                logger.error("EUR rate not found in response")
-                return None
-                
-            logger.info(f"EUR conversion rate: {eur_rate}")
-            
-            if eur_rate == 0:
-                logger.error("EUR rate is zero, division error")
-                return None
-                
-            return usd_price / eur_rate
-        else:
-            return usd_price
+        return usd_price
             
     except Exception as e:
         logger.exception(f"EXCEPTION in get_current_price: {e}")
         return None
 
 # Obtener datos históricos
-def get_historical_prices(asset_id, start_time, end_time, interval="m1"):
+def get_historical_prices(asset_id: str, start_time: datetime, end_time: datetime, interval: str = "m1") -> list:
     try:
         coincap_id = ASSETS[asset_id]["coincap_id"]
         headers = {
@@ -193,7 +270,7 @@ def get_historical_prices(asset_id, start_time, end_time, interval="m1"):
         return None
 
 # Analizar si se tocó SL o TP
-def analyze_price_history(price_history, entry_price, sl_price, tp_price, operation_type):
+def analyze_price_history(price_history: list, entry_price: float, sl_price: float, tp_price: float, operation_type: str) -> tuple:
     if not price_history:
         logger.error("No price history to analyze")
         return None, None
@@ -252,7 +329,7 @@ def analyze_price_history(price_history, entry_price, sl_price, tp_price, operat
     return None, None
 
 # Generar teclados con mejor organización
-def get_main_keyboard():
+def get_main_keyboard() -> InlineKeyboardMarkup:
     buttons = []
     
     # Organizar activos en filas de 3
@@ -269,21 +346,21 @@ def get_main_keyboard():
     # Botones de acciones
     buttons.append([
         InlineKeyboardButton("📊 Operaciones Activas", callback_data="operations"),
-        InlineKeyboardButton("📜 Historial", callback_data="history")
+        InlineKeyboardButton("📜 Historial", callback_data="history"),
+        InlineKeyboardButton("💳 Balance", callback_data="balance")
     ])
     
     return InlineKeyboardMarkup(buttons)
 
-def get_currency_keyboard(asset_id):
+def get_currency_keyboard(asset_id: str) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
         [
             InlineKeyboardButton("💵 USD", callback_data=f"currency_{asset_id}_USD"),
-            InlineKeyboardButton("💶 EUR", callback_data=f"currency_{asset_id}_EUR")
         ],
         [InlineKeyboardButton("🔙 Menú Principal", callback_data="back_main")]
     ])
 
-def get_trade_keyboard(asset_id, currency):
+def get_trade_keyboard(asset_id: str, currency: str) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
         [
             InlineKeyboardButton("🟢 COMPRAR", callback_data=f"trade_{asset_id}_{currency}_buy"),
@@ -292,9 +369,10 @@ def get_trade_keyboard(asset_id, currency):
         [InlineKeyboardButton("🔙 Atrás", callback_data=f"back_asset_{asset_id}")]
     ])
 
-def get_operations_keyboard(user_id):
+def get_operations_keyboard(user_id: str) -> InlineKeyboardMarkup:
+    auth_supabase = get_auth_supabase(user_id)
     try:
-        response = supabase.table('operations').select(
+        response = auth_supabase.table('operations').select(
             "id, asset, currency, operation_type, entry_price"
         ).eq("user_id", user_id).eq("status", "pendiente").execute()
         operations = response.data
@@ -319,9 +397,10 @@ def get_operations_keyboard(user_id):
     ])
     return InlineKeyboardMarkup(buttons)
 
-def get_history_keyboard(user_id):
+def get_history_keyboard(user_id: str) -> InlineKeyboardMarkup:
+    auth_supabase = get_auth_supabase(user_id)
     try:
-        response = supabase.table('operations').select(
+        response = auth_supabase.table('operations').select(
             "id, asset, currency, operation_type, entry_price, result"
         ).eq("user_id", user_id).eq("status", "cerrada").order("entry_time", desc=True).limit(10).execute()
         operations = response.data
@@ -356,7 +435,7 @@ def get_history_keyboard(user_id):
     ])
     return InlineKeyboardMarkup(buttons)
 
-def get_operation_detail_keyboard(op_id, is_history=False):
+def get_operation_detail_keyboard(op_id: int, is_history: bool = False) -> InlineKeyboardMarkup:
     if is_history:
         return InlineKeyboardMarkup([
             [InlineKeyboardButton("🔙 A Historial", callback_data="history")]
@@ -367,23 +446,56 @@ def get_operation_detail_keyboard(op_id, is_history=False):
                 InlineKeyboardButton("✅ Cerrar Operación", callback_data=f"close_op_{op_id}"),
                 InlineKeyboardButton("📈 Comprobar", callback_data=f"check_op_{op_id}")
             ],
+            [
+                InlineKeyboardButton("🛑 Modificar SL", callback_data=f"mod_sl_{op_id}"),
+                InlineKeyboardButton("🎯 Modificar TP", callback_data=f"mod_tp_{op_id}")
+            ],
             [InlineKeyboardButton("🔙 A Operaciones", callback_data="operations")]
         ])
 
+# Nuevo teclado de bienvenida
+def get_welcome_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("🚀 Empezar a Operar", callback_data="start_trading")]
+    ])
+
 # Handlers
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    user = update.message.from_user
+    welcome_message = (
+        "🌟 *Bienvenido al Sistema de Trading QVA Crypto* 🌟\n\n"
+        "Este bot te permite operar con criptomonedas de forma sencilla y segura. "
+        "Con nuestro sistema podrás:\n\n"
+        "• 📈 Realizar operaciones de COMPRA/VENTA\n"
+        "• 🛑 Configurar Stop Loss y Take Profit\n"
+        "• 💰 Gestionar tu saldo en CUP\n"
+        "• 📊 Monitorear tus operaciones en tiempo real\n"
+        "• 🔔 Recibir alertas cuando se alcancen tus objetivos\n\n"
+        "Todo calculado automáticamente en pesos cubanos (CUP) usando la tasa actual de USDT.\n\n"
+        "¡Comienza ahora y lleva tu trading al siguiente nivel!"
+    )
+    
     await update.message.reply_text(
-        "💰 *Sistema de Trading de Criptomonedas* 💰\nSelecciona un activo:",
+        welcome_message,
         parse_mode="Markdown",
-        reply_markup=get_main_keyboard()
+        reply_markup=get_welcome_keyboard()
     )
 
 async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.callback_query
-    user_id = query.from_user.id
+    user_id = str(query.from_user.id)
     await query.answer()
     
     data = query.data
+    
+    # Nuevo flujo de inicio
+    if data == "start_trading":
+        await query.edit_message_text(
+            "💰 *Sistema de Trading de Criptomonedas* 💰\nSelecciona un activo:",
+            parse_mode="Markdown",
+            reply_markup=get_main_keyboard()
+        )
+        return
     
     if data == "back_main":
         await query.edit_message_text(
@@ -411,9 +523,13 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             await query.edit_message_text("⚠️ Error al obtener precio. Intenta nuevamente.")
             return
             
+        # Calcular valor de pip en CUP
+        valor_pip_cup = calcular_valor_pip(asset_id, CUP_RATE)
+            
         await query.edit_message_text(
             f"*{asset['emoji']} {asset['name']} ({asset['symbol']})*\n"
-            f"💱 Precio actual: `{price:,.2f} {currency}`\n\n"
+            f"💱 Precio actual: `{price:,.2f} {currency}`\n"
+            f"💰 Valor de 1 pip: `{valor_pip_cup:.2f} CUP`\n\n"
             "Selecciona el tipo de operación:",
             parse_mode="Markdown",
             reply_markup=get_trade_keyboard(asset_id, currency)
@@ -431,6 +547,7 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             return
         
         try:
+            auth_supabase = get_auth_supabase(user_id)
             operation_data = {
                 "user_id": user_id,
                 "asset": asset_id,
@@ -440,7 +557,7 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
                 "entry_time": datetime.now(timezone.utc).isoformat(),
                 "status": "pendiente"
             }
-            response = supabase.table('operations').insert(operation_data).execute()
+            response = auth_supabase.table('operations').insert(operation_data).execute()
             if response.data:
                 op_id = response.data[0]['id']
                 context.user_data['pending_operation'] = {
@@ -477,8 +594,7 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         await query.edit_message_text(
             "📊 *Tus Operaciones Activas* 📊",
             parse_mode="Markdown",
-            reply_markup=get_operations_keyboard(user_id)
-        )
+            reply_markup=get_operations_keyboard(user_id))
     
     elif data == "history":
         await query.edit_message_text(
@@ -486,67 +602,112 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             parse_mode="Markdown",
             reply_markup=get_history_keyboard(user_id))
     
+    elif data == "balance":
+        saldo = obtener_saldo(user_id)
+        await query.edit_message_text(
+            f"💳 *Tu Saldo Actual*: `{saldo:.2f} CUP`\n\n"
+            "Selecciona una opción:",
+            parse_mode="Markdown",
+            reply_markup=get_balance_keyboard()
+        )
+    
+    elif data == "depositar":
+        context.user_data['solicitud'] = {'tipo': 'deposito'}
+        await query.edit_message_text(
+            "💸 *Depósito*\n\n"
+            f"Por favor, ingresa el monto a depositar (mínimo {MIN_DEPOSITO} CUP):",
+            parse_mode="Markdown"
+        )
+    
+    elif data == "retirar":
+        saldo = obtener_saldo(user_id)
+        if saldo <= 0:
+            await query.edit_message_text(
+                "⚠️ No tienes saldo disponible para retirar.",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Atrás", callback_data="balance")]])
+            )
+            return
+        context.user_data['solicitud'] = {'tipo': 'retiro'}
+        await query.edit_message_text(
+            "💸 *Retiro*\n\n"
+            "Por favor, ingresa el monto a retirar:",
+            parse_mode="Markdown"
+        )
+    
     elif data.startswith("view_op_") or data.startswith("view_hist_"):
         is_history = data.startswith("view_hist_")
         op_id = data.split('_')[2]
         logger.info(f"Viewing operation: {op_id}")
         try:
-            response = supabase.table('operations').select("*").eq("id", op_id).execute()
+            auth_supabase = get_auth_supabase(user_id)
+            response = auth_supabase.table('operations').select("*").eq("id", op_id).execute()
             op_data = response.data[0] if response.data else None
         except Exception as e:
             logger.error(f"Error fetching operation: {e}")
             op_data = None
         
-        if op_data:
-            asset_id = op_data['asset']
-            currency = op_data['currency']
-            op_type = op_data['operation_type']
-            price = op_data['entry_price']
-            entry_time = datetime.fromisoformat(op_data['entry_time']).strftime("%Y-%m-%d %H:%M:%S")
-            asset = ASSETS[asset_id]
+        if not op_data or op_data['status'] == 'cerrada':
+            await query.edit_message_text("⚠️ Operación no encontrada o ya cerrada.")
+            return
             
-            sl_info = f"🛑 SL: {op_data['stop_loss']:.4f}" if op_data.get('stop_loss') else "🛑 SL: No establecido"
-            tp_info = f"🎯 TP: {op_data['take_profit']:.4f}" if op_data.get('take_profit') else "🎯 TP: No establecido"
+        # Verificar que la operación pertenece al usuario
+        if op_data['user_id'] != user_id:
+            await query.edit_message_text("⚠️ No tienes permiso para ver esta operación")
+            return
             
-            status = op_data.get('status', 'pendiente')
-            status_emoji = "🟡 PENDIENTE" if status == "pendiente" else "🔴 CERRADA"
-            
-            # Información de cierre
-            close_info = ""
-            if 'exit_price' in op_data and op_data['exit_price']:
-                close_info = f"\n• Precio salida: {op_data['exit_price']:.4f} {currency}"
-            
-            if 'exit_time' in op_data and op_data['exit_time']:
-                close_time = datetime.fromisoformat(op_data['exit_time']).strftime("%Y-%m-%d %H:%M:%S")
-                close_info += f"\n• Hora salida: {close_time}"
-            
-            # Información de resultado
-            result_info = ""
-            if op_data.get('result') == "profit":
-                result_info = "\n🏆 Resultado: ✅ GANADA"
-            elif op_data.get('result') == "loss":
-                result_info = "\n🏆 Resultado: ❌ PERDIDA"
-            elif op_data.get('result') == "manual":
-                result_info = "\n🏆 Resultado: 🟣 CERRADA MANUALMENTE"
-            
-            message = (
-                f"*Detalle de Operación* #{op_id}\n\n"
-                f"• Activo: {asset['emoji']} {asset['name']} ({asset['symbol']})\n"
-                f"• Tipo: {'🟢 COMPRA' if op_type == 'buy' else '🔴 VENTA'}\n"
-                f"• Precio entrada: {price:.4f} {currency}\n"
-                f"• Hora entrada: {entry_time}\n"
-                f"• {sl_info}\n"
-                f"• {tp_info}"
-                f"{close_info}\n\n"
-                f"Estado: {status_emoji}{result_info}"
-            )
-            
-            await query.edit_message_text(
-                message,
-                parse_mode="Markdown",
-                reply_markup=get_operation_detail_keyboard(op_id, is_history))
-        else:
-            await query.edit_message_text("⚠️ Operación no encontrada.")
+        asset_id = op_data['asset']
+        currency = op_data['currency']
+        op_type = op_data['operation_type']
+        price = op_data['entry_price']
+        entry_time = datetime.fromisoformat(op_data['entry_time']).strftime("%Y-%m-%d %H:%M:%S")
+        asset = ASSETS[asset_id]
+        
+        sl_info = f"🛑 SL: {op_data['stop_loss']:.4f}" if op_data.get('stop_loss') else "🛑 SL: No establecido"
+        tp_info = f"🎯 TP: {op_data['take_profit']:.4f}" if op_data.get('take_profit') else "🎯 TP: No establecido"
+        
+        status = op_data.get('status', 'pendiente')
+        status_emoji = "🟡 PENDIENTE" if status == "pendiente" else "🔴 CERRADA"
+        
+        # Información de cierre
+        close_info = ""
+        if 'exit_price' in op_data and op_data['exit_price']:
+            close_info = f"\n• Precio salida: {op_data['exit_price']:.4f} {currency}"
+        
+        if 'exit_time' in op_data and op_data['exit_time']:
+            close_time = datetime.fromisoformat(op_data['exit_time']).strftime("%Y-%m-%d %H:%M:%S")
+            close_info += f"\n• Hora salida: {close_time}"
+        
+        # Información de resultado
+        result_info = ""
+        if op_data.get('result') == "profit":
+            result_info = "\n🏆 Resultado: ✅ GANADA"
+        elif op_data.get('result') == "loss":
+            result_info = "\n🏆 Resultado: ❌ PERDIDA"
+        elif op_data.get('result') == "manual":
+            result_info = "\n🏆 Resultado: 🟣 CERRADA MANUALMENTE"
+        
+        # Si la operación está pendiente, mostrar monto riesgo
+        monto_riesgo_info = ""
+        if status == "pendiente" and op_data.get('monto_riesgo'):
+            monto_riesgo_info = f"\n• Monto arriesgado: {op_data['monto_riesgo']:.2f} CUP"
+        
+        message = (
+            f"*Detalle de Operación* #{op_id}\n\n"
+            f"• Activo: {asset['emoji']} {asset['name']} ({asset['symbol']})\n"
+            f"• Tipo: {'🟢 COMPRA' if op_type == 'buy' else '🔴 VENTA'}\n"
+            f"• Precio entrada: {price:.4f} {currency}\n"
+            f"• Hora entrada: {entry_time}\n"
+            f"• {sl_info}\n"
+            f"• {tp_info}"
+            f"{monto_riesgo_info}"
+            f"{close_info}\n\n"
+            f"Estado: {status_emoji}{result_info}"
+        )
+        
+        await query.edit_message_text(
+            message,
+            parse_mode="Markdown",
+            reply_markup=get_operation_detail_keyboard(op_id, is_history))
     
     elif data.startswith("check_op_"):
         op_id = data.split('_')[2]
@@ -557,12 +718,18 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         op_id = data.split('_')[2]
         logger.info(f"Closing operation: {op_id}")
         try:
+            auth_supabase = get_auth_supabase(user_id)
             # Obtener operación
-            response = supabase.table('operations').select("*").eq("id", op_id).execute()
+            response = auth_supabase.table('operations').select("*").eq("id", op_id).execute()
             op_data = response.data[0] if response.data else None
             
             if not op_data:
                 await query.edit_message_text("⚠️ Operación no encontrada.")
+                return
+                
+            # Verificar propiedad
+            if op_data['user_id'] != user_id:
+                await query.edit_message_text("⚠️ No tienes permiso para cerrar esta operación.")
                 return
                 
             asset_id = op_data['asset']
@@ -574,23 +741,95 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
                 await query.edit_message_text("⚠️ Error al obtener precio actual.")
                 return
             
+            # Calcular pips movidos
+            pips_movidos = calcular_pips_movidos(op_data['entry_price'], current_price, asset_id)
+            # Calcular ganancia/pérdida en CUP
+            cambio_cup = calcular_ganancia_pips(pips_movidos, asset_id, CUP_RATE)
+            # Para ventas, la dirección es inversa
+            if op_data['operation_type'] == "sell":
+                cambio_cup = -cambio_cup
+            
             # Actualizar operación como cerrada manualmente
-            supabase.table('operations').update({
+            auth_supabase.table('operations').update({
                 "status": "cerrada",
                 "result": "manual",
                 "exit_price": current_price,
                 "exit_time": datetime.now(timezone.utc).isoformat()
             }).eq("id", op_id).execute()
             
+            # Actualizar saldo del usuario
+            actualizar_saldo(user_id, cambio_cup)
+            
             await query.edit_message_text(
                 f"✅ *Operación #{op_id} cerrada exitosamente!*\n"
-                f"• Precio de cierre: {current_price:.4f} {currency}",
+                f"• Precio de cierre: {current_price:.4f} {currency}\n"
+                f"• Pips movidos: {pips_movidos:.1f}\n"
+                f"• {'Ganancia' if cambio_cup >= 0 else 'Pérdida'}: {abs(cambio_cup):.2f} CUP",
                 parse_mode="Markdown",
                 reply_markup=get_main_keyboard()
             )
         except Exception as e:
             logger.error(f"Error closing operation: {e}")
             await query.edit_message_text("⚠️ Error al cerrar la operación.")
+    
+    elif data.startswith("mod_sl_") or data.startswith("mod_tp_"):
+        op_id = data.split('_')[2]
+        mod_type = "SL" if "sl" in data else "TP"
+        
+        try:
+            auth_supabase = get_auth_supabase(user_id)
+            # Obtener operación
+            response = auth_supabase.table('operations').select("*").eq("id", op_id).execute()
+            op_data = response.data[0] if response.data else None
+            
+            if not op_data:
+                await query.edit_message_text("⚠️ Operación no encontrada.")
+                return
+                
+            # Verificar propiedad
+            if op_data['user_id'] != user_id:
+                await query.edit_message_text("⚠️ No tienes permiso para modificar esta operación.")
+                return
+                
+            # Verificar que está pendiente
+            if op_data['status'] != 'pendiente':
+                await query.edit_message_text("⚠️ Solo puedes modificar operaciones activas.")
+                return
+                
+            context.user_data['modifying'] = {
+                'op_id': op_id,
+                'type': mod_type
+            }
+            
+            # Obtener precio actual para sugerencia
+            current_price = get_current_price(op_data['asset'], op_data['currency'])
+            asset = ASSETS[op_data['asset']]
+            
+            if current_price:
+                if mod_type == "SL":
+                    if op_data['operation_type'] == "buy":
+                        suggestion = current_price * 0.98  # 2% debajo del precio actual
+                    else:  # sell
+                        suggestion = current_price * 1.02  # 2% encima del precio actual
+                else:  # TP
+                    if op_data['operation_type'] == "buy":
+                        suggestion = current_price * 1.02  # 2% encima del precio actual
+                    else:  # sell
+                        suggestion = current_price * 0.98  # 2% debajo del precio actual
+                    
+                suggestion_msg = f"\nSugerencia: `{mod_type} {suggestion:.4f}`"
+            else:
+                suggestion_msg = ""
+            
+            await query.edit_message_text(
+                f"✏️ *Modificando {mod_type} para {asset['name']}*\n\n"
+                f"Envía el nuevo valor para el {mod_type}.\n"
+                f"Formato: `{mod_type} [precio]`{suggestion_msg}",
+                parse_mode="Markdown"
+            )
+        except Exception as e:
+            logger.error(f"Error preparing modification: {e}")
+            await query.edit_message_text("⚠️ Error al preparar la modificación.")
     
     elif data.startswith("back_asset_"):
         asset_id = data.split('_')[2]
@@ -599,17 +838,112 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             f"Selecciona la moneda para {asset['name']}:",
             reply_markup=get_currency_keyboard(asset_id))
 
-# Handler para recibir SL/TP
+    # Manejar aprobaciones/rechazos del admin
+    elif data.startswith("apr_") or data.startswith("rej_"):
+        if user_id != ADMIN_ID:
+            await query.answer("⚠️ Solo el administrador puede realizar esta acción", show_alert=True)
+            return
+            
+        partes = data.split('_')
+        accion = partes[0]  # apr o rej
+        tipo = partes[1]    # deposito o retiro
+        solicitud_id = int(partes[2])
+        
+        # Obtener la solicitud
+        try:
+            auth_supabase = get_auth_supabase(ADMIN_ID)
+            response = auth_supabase.table('solicitudes').select('*').eq('id', solicitud_id).execute()
+            solicitud = response.data[0] if response.data else None
+        except Exception as e:
+            logger.error(f"Error obteniendo solicitud: {e}")
+            solicitud = None
+        
+        if not solicitud:
+            await query.edit_message_text("⚠️ Solicitud no encontrada.")
+            return
+        
+        if accion == 'apr':
+            # Aprobar solicitud
+            if tipo == 'deposito':
+                # Actualizar saldo
+                nuevo_saldo = actualizar_saldo(solicitud['user_id'], solicitud['monto'])
+                estado = 'aprobado'
+                mensaje_user = f"✅ Tu depósito de {solicitud['monto']:.2f} CUP ha sido aprobado. Nuevo saldo: {nuevo_saldo:.2f} CUP."
+            else:  # retiro
+                # Verificar que aún tenga saldo suficiente
+                saldo_actual = obtener_saldo(solicitud['user_id'])
+                if saldo_actual < solicitud['monto']:
+                    mensaje_admin = "⚠️ El usuario ya no tiene saldo suficiente para este retiro."
+                    await query.edit_message_text(mensaje_admin)
+                    actualizar_solicitud(solicitud_id, 'rechazado', 'Saldo insuficiente')
+                    
+                    # Notificar al usuario
+                    await context.bot.send_message(
+                        chat_id=solicitud['user_id'],
+                        text=f"❌ Tu retiro de {solicitud['monto']:.2f} CUP fue rechazado. Motivo: Saldo insuficiente."
+                    )
+                    return
+                
+                # Actualizar saldo
+                nuevo_saldo = actualizar_saldo(solicitud['user_id'], -solicitud['monto'])
+                estado = 'aprobado'
+                mensaje_user = f"✅ Tu retiro de {solicitud['monto']:.2f} CUP ha sido aprobado. El dinero será transferido pronto."
+            
+            # Actualizar estado de solicitud
+            actualizar_solicitud(solicitud_id, estado)
+            
+            # Notificar al usuario
+            await context.bot.send_message(
+                chat_id=solicitud['user_id'],
+                text=mensaje_user
+            )
+            
+            await query.edit_message_text(f"✅ Solicitud {solicitud_id} aprobada.")
+            
+        else:  # rej
+            # Pedir motivo de rechazo
+            context.user_data['rechazo'] = {
+                'solicitud_id': solicitud_id,
+                'tipo': tipo,
+                'user_id': solicitud['user_id']
+            }
+            await query.edit_message_text("📝 Por favor, envía el motivo del rechazo:")
+
+# Handler para recibir SL/TP iniciales
 async def set_sl_tp(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    user_id = update.message.from_user.id
+    user_id = str(update.message.from_user.id)
     text = update.message.text.strip()
     logger.info(f"Received SL/TP from user {user_id}: {text}")
     
     if 'pending_operation' not in context.user_data:
-        await update.message.reply_text("No hay operaciones pendientes de configuración")
         return
     
     op_data = context.user_data['pending_operation']
+    op_id = op_data['id']
+    
+    # Verificar propiedad de la operación
+    try:
+        auth_supabase = get_auth_supabase(user_id)
+        response = auth_supabase.table('operations').select('user_id, status').eq('id', op_id).execute()
+        if not response.data:
+            await update.message.reply_text("❌ Operación no encontrada")
+            del context.user_data['pending_operation']
+            return
+            
+        op_db = response.data[0]
+        if op_db['user_id'] != user_id:
+            await update.message.reply_text("❌ Operación no pertenece a este usuario")
+            del context.user_data['pending_operation']
+            return
+            
+        if op_db['status'] != 'pendiente':
+            await update.message.reply_text("❌ Operación ya no está pendiente")
+            del context.user_data['pending_operation']
+            return
+    except Exception as e:
+        logger.error(f"Verificación de propiedad fallida: {e}")
+        return
+    
     asset_id = op_data['asset_id']
     currency = op_data['currency']
     operation_type = op_data['operation_type']
@@ -651,29 +985,221 @@ async def set_sl_tp(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             return
     
     try:
-        supabase.table('operations').update({
+        auth_supabase = get_auth_supabase(user_id)
+        auth_supabase.table('operations').update({
             "stop_loss": sl_price,
             "take_profit": tp_price
-        }).eq("id", op_data['id']).execute()
+        }).eq("id", op_id).execute()
+        
+        # Calcular pips entre entrada y SL/TP
+        pips_to_sl = calcular_pips_movidos(entry_price, sl_price, asset_id)
+        pips_to_tp = calcular_pips_movidos(entry_price, tp_price, asset_id)
+        
+        # Calcular valores en CUP
+        sl_cup = calcular_ganancia_pips(pips_to_sl, asset_id, CUP_RATE)
+        tp_cup = calcular_ganancia_pips(pips_to_tp, asset_id, CUP_RATE)
         
         await update.message.reply_text(
             f"✅ *Stop Loss y Take Profit configurados!*\n\n"
             f"• Activo: {asset['emoji']} {asset['name']} ({asset['symbol']})\n"
-            f"• 🛑 Stop Loss: {sl_price:.4f} {currency}\n"
-            f"• 🎯 Take Profit: {tp_price:.4f} {currency}\n\n"
+            f"• 🛑 Stop Loss: {sl_price:.4f} {currency} ({pips_to_sl:.1f} pips = {sl_cup:.2f} CUP)\n"
+            f"• 🎯 Take Profit: {tp_price:.4f} {currency} ({pips_to_tp:.1f} pips = {tp_cup:.2f} CUP)\n\n"
+            f"Ahora, por favor ingresa el monto que deseas arriesgar en CUP:",
+            parse_mode="Markdown"
+        )
+    except Exception as e:
+        logger.error(f"Error setting SL/TP: {e}")
+        await update.message.reply_text("⚠️ Error interno al configurar SL/TP.")
+
+# Handler para recibir monto de riesgo
+async def recibir_monto_riesgo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    user_id = str(update.message.from_user.id)
+    text = update.message.text.strip()
+    
+    if 'pending_operation' not in context.user_data:
+        return
+    
+    try:
+        monto_riesgo = float(text)
+        if monto_riesgo <= 0:
+            await update.message.reply_text("⚠️ Monto inválido. Por favor ingresa un número positivo:")
+            return
+    except ValueError:
+        await update.message.reply_text("⚠️ Monto inválido. Por favor ingresa un número:")
+        return
+    
+    op_data = context.user_data['pending_operation']
+    op_id = op_data['id']
+    
+    # Guardar el monto de riesgo en la operación
+    try:
+        auth_supabase = get_auth_supabase(user_id)
+        auth_supabase.table('operations').update({
+            "monto_riesgo": monto_riesgo
+        }).eq("id", op_id).execute()
+        
+        # Guardar en contexto para uso posterior
+        context.user_data['pending_operation']['monto_riesgo'] = monto_riesgo
+        
+        # Calcular valor de pip en CUP
+        valor_pip_cup = calcular_valor_pip(op_data['asset_id'], CUP_RATE)
+        
+        await update.message.reply_text(
+            f"✅ *Monto de riesgo configurado!*\n\n"
+            f"• Monto arriesgado: {monto_riesgo:.2f} CUP\n"
+            f"• Valor por pip: {valor_pip_cup:.2f} CUP\n"
+            f"• Ganancia/pérdida por pip: {valor_pip_cup:.2f} CUP\n\n"
             f"Operación lista para monitoreo.",
             parse_mode="Markdown",
             reply_markup=get_main_keyboard()
         )
         del context.user_data['pending_operation']
     except Exception as e:
-        logger.error(f"Error setting SL/TP: {e}")
-        await update.message.reply_text("⚠️ Error interno al configurar SL/TP.")
+        logger.error(f"Error setting risk amount: {e}")
+        await update.message.reply_text("⚠️ Error al guardar el monto de riesgo.")
+
+# Handler para recibir montos de depósito/retiro
+async def recibir_monto(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    user_id = str(update.message.from_user.id)
+    text = update.message.text.strip()
+    
+    if 'solicitud' not in context.user_data:
+        return
+    
+    solicitud = context.user_data['solicitud']
+    tipo = solicitud['tipo']
+    
+    try:
+        monto = float(text)
+        if tipo == 'deposito' and monto < MIN_DEPOSITO:
+            await update.message.reply_text(f"⚠️ El monto mínimo de depósito es {MIN_DEPOSITO} CUP. Intenta nuevamente:")
+            return
+        if tipo == 'retiro':
+            saldo = obtener_saldo(user_id)
+            if monto > saldo:
+                await update.message.reply_text(f"⚠️ Saldo insuficiente. Tu saldo actual es: {saldo:.2f} CUP. Ingresa un monto válido:")
+                return
+            if monto <= 0:
+                await update.message.reply_text("⚠️ Monto inválido. Ingresa un monto positivo:")
+                return
+        
+        # Guardar el monto
+        context.user_data['solicitud']['monto'] = monto
+        
+        if tipo == 'deposito':
+            await update.message.reply_text(
+                "📤 Por favor, envía la captura de pantalla del comprobante de depósito."
+            )
+        else:  # retiro
+            await update.message.reply_text(
+                "📤 Por favor, envía tus datos en el formato:\n\n"
+                "Tarjeta: [número de tarjeta]\n"
+                "Teléfono: [número de teléfono]"
+            )
+    except ValueError:
+        await update.message.reply_text("⚠️ Monto inválido. Por favor ingresa un número:")
+
+# Handler para recibir comprobantes y datos de retiro
+async def recibir_datos(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    user_id = str(update.message.from_user.id)
+    solicitud = context.user_data.get('solicitud', {})
+    tipo = solicitud.get('tipo')
+    monto = solicitud.get('monto')
+    
+    if not tipo or not monto:
+        await update.message.reply_text("⚠️ Error en el proceso. Por favor comienza nuevamente.")
+        return
+    
+    if tipo == 'deposito' and update.message.photo:
+        # Guardar la mejor calidad de foto (última en la lista)
+        photo = update.message.photo[-1]
+        file = await photo.get_file()
+        file_path = file.file_path
+        
+        # Crear solicitud
+        solicitud_id = crear_solicitud(user_id, 'deposito', monto, comprobante=file_path)
+        
+        if solicitud_id:
+            # Notificar al admin
+            keyboard = get_admin_keyboard(solicitud_id, 'deposito')
+            await context.bot.send_photo(
+                chat_id=ADMIN_ID,
+                photo=file_path,
+                caption=f"📥 *Nueva solicitud de depósito*\n\n"
+                        f"• ID Usuario: `{user_id}`\n"
+                        f"• Monto: `{monto:.2f} CUP`\n"
+                        f"• ID Solicitud: `{solicitud_id}`",
+                parse_mode="Markdown",
+                reply_markup=keyboard
+            )
+            
+            await update.message.reply_text(
+                "✅ Solicitud de depósito enviada. Espera la confirmación del administrador.",
+                reply_markup=get_main_keyboard()
+            )
+        else:
+            await update.message.reply_text("⚠️ Error al crear la solicitud. Intenta nuevamente.")
+        
+        del context.user_data['solicitud']
+    
+    elif tipo == 'retiro' and update.message.text:
+        datos = update.message.text.strip()
+        # Crear solicitud
+        solicitud_id = crear_solicitud(user_id, 'retiro', monto, datos=datos)
+        
+        if solicitud_id:
+            # Notificar al admin
+            keyboard = get_admin_keyboard(solicitud_id, 'retiro')
+            await context.bot.send_message(
+                chat_id=ADMIN_ID,
+                text=f"📤 *Nueva solicitud de retiro*\n\n"
+                     f"• ID Usuario: `{user_id}`\n"
+                     f"• Monto: `{monto:.2f} CUP`\n"
+                     f"• Datos:\n`{datos}`\n"
+                     f"• ID Solicitud: `{solicitud_id}`",
+                parse_mode="Markdown",
+                reply_markup=keyboard
+            )
+            
+            await update.message.reply_text(
+                "✅ Solicitud de retiro enviada. Espera la confirmación del administrador.",
+                reply_markup=get_main_keyboard()
+            )
+        else:
+            await update.message.reply_text("⚠️ Error al crear la solicitud. Intenta nuevamente.")
+        
+        del context.user_data['solicitud']
+
+# Handler para recibir motivos de rechazo (admin)
+async def recibir_motivo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    user_id = str(update.message.from_user.id)
+    motivo = update.message.text.strip()
+    
+    if user_id != ADMIN_ID or 'rechazo' not in context.user_data:
+        return
+    
+    rechazo = context.user_data['rechazo']
+    solicitud_id = rechazo['solicitud_id']
+    tipo = rechazo['tipo']
+    user_id_destino = rechazo['user_id']
+    
+    # Actualizar solicitud
+    actualizar_solicitud(solicitud_id, 'rechazado', motivo)
+    
+    # Notificar al usuario
+    tipo_texto = "depósito" if tipo == 'deposito' else "retiro"
+    await context.bot.send_message(
+        chat_id=user_id_destino,
+        text=f"❌ Tu solicitud de {tipo_texto} fue rechazada. Motivo:\n\n{motivo}"
+    )
+    
+    await update.message.reply_text("✅ Rechazo registrado y notificado al usuario.")
+    del context.user_data['rechazo']
 
 # Función para comprobar operación (con SL/TP visibles)
 async def check_operation(update: Update, context: ContextTypes.DEFAULT_TYPE, op_id: int):
     query = update.callback_query
-    user_id = query.from_user.id
+    user_id = str(query.from_user.id)
     await query.answer()
     
     if not check_credits(user_id):
@@ -683,7 +1209,8 @@ async def check_operation(update: Update, context: ContextTypes.DEFAULT_TYPE, op
         return
     
     try:
-        response = supabase.table('operations').select("*").eq("id", op_id).execute()
+        auth_supabase = get_auth_supabase(user_id)
+        response = auth_supabase.table('operations').select("*").eq("id", op_id).execute()
         op_data = response.data[0] if response.data else None
     except Exception as e:
         logger.error(f"Error fetching operation: {e}")
@@ -695,6 +1222,11 @@ async def check_operation(update: Update, context: ContextTypes.DEFAULT_TYPE, op
     
     if not op_data.get('stop_loss') or not op_data.get('take_profit'):
         await query.edit_message_text("⚠️ Esta operación no tiene SL/TP configurados.")
+        return
+    
+    # Verificar propiedad
+    if op_data['user_id'] != user_id:
+        await query.edit_message_text("⚠️ No tienes permiso para comprobar esta operación.")
         return
     
     # Convertir a UTC para evitar problemas de zona horaria
@@ -758,14 +1290,16 @@ async def check_operation(update: Update, context: ContextTypes.DEFAULT_TYPE, op
     currency = op_data['currency']
     entry_price = op_data['entry_price']
     
+    # Calcular pips movidos desde la entrada hasta el precio actual
+    pips_movidos = calcular_pips_movidos(entry_price, current_price, op_data['asset'])
+    # Calcular ganancia/pérdida en CUP
+    cambio_cup = calcular_ganancia_pips(pips_movidos, op_data['asset'], CUP_RATE)
+    # Para ventas, la dirección es inversa
+    if operation_type == "sell":
+        cambio_cup = -cambio_cup
+    
     # Emoji de tendencia
-    trend_emoji = ""
-    if current_price > entry_price:
-        trend_emoji = "📈🟢"
-    elif current_price < entry_price:
-        trend_emoji = "📉🔴"
-    else:
-        trend_emoji = "➖⚪"
+    trend_emoji = "📈🟢" if cambio_cup >= 0 else "📉🔴"
     
     # Calcular distancia a SL y TP
     if operation_type == "buy":
@@ -779,8 +1313,15 @@ async def check_operation(update: Update, context: ContextTypes.DEFAULT_TYPE, op
         current_to_sl = sl_price - current_price
         current_to_tp = current_price - tp_price
     
-    sl_percentage = (current_to_sl / to_sl) * 100 if to_sl != 0 else 0
-    tp_percentage = (current_to_tp / to_tp) * 100 if to_tp != 0 else 0
+    # Calcular pips a SL y TP
+    pips_to_sl = calcular_pips_movidos(entry_price, sl_price, op_data['asset'])
+    pips_to_tp = calcular_pips_movidos(entry_price, tp_price, op_data['asset'])
+    current_pips_to_sl = calcular_pips_movidos(current_price, sl_price, op_data['asset'])
+    current_pips_to_tp = calcular_pips_movidos(current_price, tp_price, op_data['asset'])
+    
+    # Calcular porcentajes de avance hacia SL/TP
+    sl_percentage = (current_pips_to_sl / pips_to_sl) * 100 if pips_to_sl != 0 else 0
+    tp_percentage = (current_pips_to_tp / pips_to_tp) * 100 if pips_to_tp != 0 else 0
     
     # Determinar precio de salida
     exit_price = None
@@ -790,16 +1331,16 @@ async def check_operation(update: Update, context: ContextTypes.DEFAULT_TYPE, op
         exit_price = tp_price
     
     if result == "SL":
-        message = (
-            f"⚠️ *STOP LOSS ACTIVADO* ⚠️\n\n"
-            f"• Operación #{op_id} ({asset_info['emoji']} {symbol})\n"
-            f"• Tipo: {'COMPRA' if operation_type == 'buy' else 'VENTA'}\n"
-            f"• Precio entrada: {entry_price:.4f} {currency}\n"
-            f"• 🛑 Stop Loss: {sl_price:.4f} {currency}\n"
-            f"• 🎯 Take Profit: {tp_price:.4f} {currency}\n"
-            f"• Tocado el: {touch_time.strftime('%Y-%m-%d %H:%M:%S')}\n\n"
-            f"🏆 Resultado: ❌ PERDIDA {trend_emoji}"
-        )
+        # Calcular pérdida (pips hasta SL)
+        pips_result = pips_to_sl
+        perdida_cup = calcular_ganancia_pips(pips_result, op_data['asset'], CUP_RATE)
+        # Para ventas, la dirección es inversa
+        if operation_type == "sell":
+            perdida_cup = -perdida_cup
+        
+        # Actualizar saldo
+        actualizar_saldo(user_id, perdida_cup)
+        
         # Actualizar operación como cerrada
         update_data = {
             "status": "cerrada",
@@ -807,19 +1348,31 @@ async def check_operation(update: Update, context: ContextTypes.DEFAULT_TYPE, op
             "exit_price": exit_price,
             "exit_time": touch_time.isoformat()
         }
-        supabase.table('operations').update(update_data).eq("id", op_id).execute()
+        auth_supabase = get_auth_supabase(user_id)
+        auth_supabase.table('operations').update(update_data).eq("id", op_id).execute()
         
-    elif result == "TP":
         message = (
-            f"🎯 *TAKE PROFIT ACTIVADO* 🎯\n\n"
+            f"⚠️ *STOP LOSS ACTIVADO* ⚠️\n\n"
             f"• Operación #{op_id} ({asset_info['emoji']} {symbol})\n"
             f"• Tipo: {'COMPRA' if operation_type == 'buy' else 'VENTA'}\n"
-            f"• Precio entrada: {entry_price:.4f} {currency}\n"
-            f"• 🛑 Stop Loss: {sl_price:.4f} {currency}\n"
-            f"• 🎯 Take Profit: {tp_price:.4f} {currency}\n"
-            f"• Tocado el: {touch_time.strftime('%Y-%m-%d %H:%M:%S')}\n\n"
-            f"🏆 Resultado: ✅ GANADA {trend_emoji}"
+            f"• Precio entrada: {entry_price:.4f}\n"
+            f"• Precio salida: {exit_price:.4f}\n"
+            f"• Pips movidos: {pips_result:.1f}\n"
+            f"• Monto arriesgado: {op_data.get('monto_riesgo',0):.2f} CUP\n\n"
+            f"🏆 Resultado: ❌ PÉRDIDA de {abs(perdida_cup):.2f} CUP"
         )
+        
+    elif result == "TP":
+        # Calcular ganancia (pips hasta TP)
+        pips_result = pips_to_tp
+        ganancia_cup = calcular_ganancia_pips(pips_result, op_data['asset'], CUP_RATE) * 0.8  # 80% de ganancia
+        # Para ventas, la dirección es inversa
+        if operation_type == "sell":
+            ganancia_cup = -ganancia_cup
+        
+        # Actualizar saldo
+        actualizar_saldo(user_id, ganancia_cup)
+        
         # Actualizar operación como cerrada
         update_data = {
             "status": "cerrada",
@@ -827,32 +1380,27 @@ async def check_operation(update: Update, context: ContextTypes.DEFAULT_TYPE, op
             "exit_price": exit_price,
             "exit_time": touch_time.isoformat()
         }
-        supabase.table('operations').update(update_data).eq("id", op_id).execute()
+        auth_supabase = get_auth_supabase(user_id)
+        auth_supabase.table('operations').update(update_data).eq("id", op_id).execute()
+        
+        message = (
+            f"🎯 *TAKE PROFIT ACTIVADO* 🎯\n\n"
+            f"• Operación #{op_id} ({asset_info['emoji']} {symbol})\n"
+            f"• Tipo: {'COMPRA' if operation_type == 'buy' else 'VENTA'}\n"
+            f"• Precio entrada: {entry_price:.4f}\n"
+            f"• Precio salida: {exit_price:.4f}\n"
+            f"• Pips movidos: {pips_result:.1f}\n"
+            f"• Monto arriesgado: {op_data.get('monto_riesgo',0):.2f} CUP\n\n"
+            f"🏆 Resultado: ✅ GANANCIA de {abs(ganancia_cup):.2f} CUP"
+        )
         
     else:
-        price_diff = current_price - entry_price
-        percentage = (price_diff / entry_price) * 100
-        
-        if operation_type == "sell":
-            price_diff = -price_diff
-            percentage = -percentage
-            
-        if price_diff > 0:
-            arrow = "⬆️🟢"
-            result_status = "GANANCIA"
-        elif price_diff < 0:
-            arrow = "⬇️🔴"
-            result_status = "PÉRDIDA"
-        else:
-            arrow = "➖⚪"
-            result_status = "SIN CAMBIO"
-        
         # Mostrar SL y TP en el estado actual
         sl_tp_info = (
             f"• 🛑 Stop Loss: {sl_price:.4f} {currency}\n"
-            f"   - Distancia: {current_to_sl:.4f} ({sl_percentage:.1f}%)\n"
+            f"   - Distancia: {current_to_sl:.4f} (queda {current_pips_to_sl:.1f} pips, {sl_percentage:.1f}%)\n"
             f"• 🎯 Take Profit: {tp_price:.4f} {currency}\n"
-            f"   - Distancia: {current_to_tp:.4f} ({tp_percentage:.1f}%)\n"
+            f"   - Distancia: {current_to_tp:.4f} (queda {current_pips_to_tp:.1f} pips, {tp_percentage:.1f}%)\n"
         )
         
         message = (
@@ -860,11 +1408,11 @@ async def check_operation(update: Update, context: ContextTypes.DEFAULT_TYPE, op
             f"• Activo: {asset_info['emoji']} {symbol}\n"
             f"• Tipo: {'VENTA' if operation_type == 'sell' else 'COMPRA'}\n"
             f"• Precio entrada: {entry_price:.4f} {currency}\n"
-            f"• 💰 Precio actual: {current_price:.4f} {currency} {arrow}\n"
-            f"• Diferencia: {price_diff:+.4f} {currency}\n"
-            f"• Porcentaje: {percentage:+.2f}%\n\n"
+            f"• 💰 Precio actual: {current_price:.4f} {currency} {trend_emoji}\n"
+            f"• Pips movidos: {pips_movidos:.1f}\n"
+            f"• Cambio: {cambio_cup:+.2f} CUP\n"
+            f"• Monto arriesgado: {op_data.get('monto_riesgo',0):.2f} CUP\n\n"
             f"{sl_tp_info}\n"
-            f"🏆 Resultado: {result_status}\n\n"
             f"ℹ️ No se ha alcanzado Stop Loss ni Take Profit."
         )
     
@@ -889,7 +1437,14 @@ def main():
     # Registrar handlers
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CallbackQueryHandler(button_click))
+    
+    # Agregar handlers en orden de prioridad
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, recibir_monto_riesgo))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, set_sl_tp))
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, recibir_monto))
+    application.add_handler(MessageHandler(filters.PHOTO, recibir_datos))
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, recibir_datos))
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, recibir_motivo))
     
     logger.info("🤖 Iniciando Bot de Trading en modo Webhook")
     logger.info(f"🔗 URL del webhook: {WEBHOOK_URL}/{TOKEN}")
