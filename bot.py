@@ -76,7 +76,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Función para crear cliente Supabase autenticado con JWT (CORREGIDA)
+# Función para crear cliente Supabase autenticado con JWT
 def get_auth_supabase(user_id: str) -> Client:
     # Crear token JWT
     payload = {
@@ -128,7 +128,7 @@ def actualizar_saldo(user_id: str, monto: float) -> float:
 # Crear solicitud de depósito/retiro
 def crear_solicitud(user_id: str, tipo: str, monto: float, comprobante: str = None, datos: str = None) -> int:
     try:
-        auth_supabase = get_auth_s极速赛车开奖官网
+        auth_supabase = get_auth_supabase(user_id)
         solicitud_data = {
             'user_id': user_id,
             'tipo': tipo,
@@ -168,7 +168,7 @@ def actualizar_solicitud(solicitud_id: int, estado: str, motivo: str = None, adm
 def get_admin_keyboard(solicitud_id: int, tipo: str) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
         [
-            InlineKeyboard极速赛车开奖官网("✅ Aprobar", callback_data=f"apr_{tipo}_{solicitud_id}"),
+            InlineKeyboardButton("✅ Aprobar", callback_data=f"apr_{tipo}_{solicitud_id}"),
             InlineKeyboardButton("❌ Rechazar", callback_data=f"rej_{tipo}_{solicitud_id}")
         ]
     ])
@@ -358,7 +358,7 @@ def get_currency_keyboard(asset_id):
         [
             InlineKeyboardButton("💵 USD", callback_data=f"currency_{asset_id}_USD"),
         ],
-        [InlineKeyboardButton("🔙 Menú Principal", callback极速赛车开奖官网="back_main")]
+        [InlineKeyboardButton("🔙 Menú Principal", callback_data="back_main")]
     ])
 
 def get_trade_keyboard(asset_id, currency):
@@ -546,7 +546,7 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         try:
             auth_supabase = get_auth_supabase(user_id)
             operation_data = {
-                "user_id": user极速赛车开奖官网
+                "user_id": user_id,
                 "asset": asset_id,
                 "currency": currency,
                 "operation_type": operation_type,
@@ -880,7 +880,7 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
                 # Actualizar saldo
                 nuevo_saldo = actualizar_saldo(solicitud['user_id'], -solicitud['monto'])
                 estado = 'aprobado'
-                mensaje_user = f"✅ Tu retiro de {solicitud['极速赛车开奖官网']:.2f} CUP ha sido aprobado. El dinero será transferido pronto."
+                mensaje_user = f"✅ Tu retiro de {solicitud['monto']:.2f} CUP ha sido aprobado. El dinero será transferido pronto."
             
             # Actualizar estado de solicitud
             actualizar_solicitud(solicitud_id, estado)
@@ -948,7 +948,7 @@ async def set_sl_tp(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         return
     
     sl_line = lines[0].strip().upper()
-    tp_line = lines[极速赛车开奖官网].strip().upper()
+    tp_line = lines[1].strip().upper()
     
     if not sl_line.startswith("SL ") or not tp_line.startswith("TP "):
         await update.message.reply_text("Formato incorrecto. Por favor comienza con 'SL' y 'TP'.")
@@ -995,7 +995,7 @@ async def set_sl_tp(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             f"✅ *Stop Loss y Take Profit configurados!*\n\n"
             f"• Activo: {asset['emoji']} {asset['name']} ({asset['symbol']})\n"
             f"• 🛑 Stop Loss: {sl_price:.4f} {currency} ({pips_to_sl:.1f} pips = {sl_cup:.2f} CUP)\n"
-            f"• 🎯 Take Profit: {tp_price:.4f} {currency} ({p极速赛车开奖官网}_to_tp:.1f} pips = {tp_cup:.2f} CUP)\n\n"
+            f"• 🎯 Take Profit: {tp_price:.4f} {currency} ({pips_to_tp:.1f} pips = {tp_cup:.2f} CUP)\n\n"
             f"Ahora, por favor ingresa el monto que deseas arriesgar en CUP:",
             parse_mode="Markdown"
         )
@@ -1038,12 +1038,12 @@ async def recibir_monto_riesgo(update: Update, context: ContextTypes.DEFAULT_TYP
         
         await update.message.reply_text(
             f"✅ *Monto de riesgo configurado!*\n\n"
-            f"• Monto arriesgado: {monto_riesgo:.2极速赛车开奖官网} CUP\n"
+            f"• Monto arriesgado: {monto_riesgo:.2f} CUP\n"
             f"• Valor por pip: {valor_pip_cup:.2f} CUP\n"
             f"• Ganancia/pérdida por pip: {valor_pip_cup:.2f} CUP\n\n"
             f"Operación lista para monitoreo.",
             parse_mode="Markdown",
-            reply_markup=get_main极速赛车开奖官网()
+            reply_markup=get_main_keyboard()
         )
         del context.user_data['pending_operation']
     except Exception as e:
