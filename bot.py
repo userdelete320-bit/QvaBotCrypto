@@ -13,11 +13,32 @@ from telegram.ext import (
     filters
 )
 from supabase import create_client, Client
-from pip_calculator import calcular_valor_pip, calcular_ganancia_pips, calcular_pips_movidos
+
+# Importar funciones de cálculo de pips
+try:
+    from pip_calculator import calcular_valor_pip, calcular_ganancia_pips, calcular_pips_movidos
+except ImportError:
+    # Definiciones de respaldo en caso de que el módulo no esté disponible
+    PIP_VALUES = {
+        "bitcoin": 0.01, "ethereum": 0.01, "binance-coin": 0.01, "tether": 0.0001, 
+        "dai": 0.0001, "usd-coin": 0.0001, "ripple": 0.0001, "cardano": 0.0001,
+        "solana": 0.01, "dogecoin": 0.000001, "polkadot": 0.01, "litecoin": 0.01,
+        "chainlink": 0.001, "bitcoin-cash": 0.01
+    }
+    
+    def calcular_valor_pip(asset_id, cup_rate):
+        return PIP_VALUES.get(asset_id, 0.01) * cup_rate
+
+    def calcular_ganancia_pips(pips, asset_id, cup_rate, apalancamiento=1):
+        return pips * calcular_valor_pip(asset_id, cup_rate) * apalancamiento
+
+    def calcular_pips_movidos(precio_inicial, precio_final, asset_id):
+        pip_value = PIP_VALUES.get(asset_id, 0.01)
+        return abs(precio_final - precio_inicial) / pip_value
 
 # Configuración
 TOKEN = os.getenv("TELEGRAM_TOKEN")
-ADMIN_ID = 5376388604  # Tu ID de administrador
+ADMIN_ID = "5376388604"  # ID como string
 COINCAP_API_KEY = "c0b9354ec2c2d06d6395519f432b056c06f6340b62b72de1cf71a44ed9c6a36e"
 COINCAP_API_URL = "https://rest.coincap.io/v3"
 MAX_DAILY_CHECKS = 80
@@ -25,7 +46,7 @@ JWT_SECRET = os.getenv("JWT_SECRET", "mE9fG7qX2sVpYtRwA1zB4cD5eF6gH7jK8lL9mN0oP1
 MIN_DEPOSITO = 3000  # Mínimo de depósito en CUP
 CUP_RATE = 440  # Tasa fija de USDT a CUP
 
-# Mapeo de activos (solo criptomonedas)
+# Mapeo de activos
 ASSETS = {
     "bitcoin": {"symbol": "BTC", "name": "Bitcoin", "coincap_id": "bitcoin", "emoji": "🪙"},
     "ethereum": {"symbol": "ETH", "name": "Ethereum", "coincap_id": "ethereum", "emoji": "🔷"},
@@ -55,7 +76,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Función para crear cliente Supabase autenticado con JWT - CORREGIDA
+# Función para crear cliente Supabase autenticado con JWT (CORREGIDA)
 def get_auth_supabase(user_id: str) -> Client:
     # Crear token JWT
     payload = {
@@ -65,20 +86,23 @@ def get_auth_supabase(user_id: str) -> Client:
     }
     token = jwt.encode(payload, JWT_SECRET, algorithm="HS256")
     
-    # Configuración CORRECTA de headers
-    options = {
-        'headers': {
-            'Authorization': f'Bearer {token}'
+    # Crear cliente autenticado
+    return create_client(
+        SUPABASE_URL, 
+        SUPABASE_KEY, 
+        {
+            'headers': {
+                'Authorization': f'Bearer {token}'
+            }
         }
-    }
-    
-    return create_client(SUPABASE_URL, SUPABASE_KEY, options)
+    )
 
 # Gestión de saldo
 def obtener_saldo(user_id: str) -> float:
     try:
         auth_supabase = get_auth_supabase(user_id)
         response = auth_supabase.table('balance').select('saldo').eq('user_id', user_id).execute()
+        
         if response.data:
             return response.data[0]['saldo']
         else:
@@ -104,7 +128,7 @@ def actualizar_saldo(user_id: str, monto: float) -> float:
 # Crear solicitud de depósito/retiro
 def crear_solicitud(user_id: str, tipo: str, monto: float, comprobante: str = None, datos: str = None) -> int:
     try:
-        auth_supabase = get_auth_supabase(user_id)
+        auth_supabase = get_auth_s极速赛车开奖官网
         solicitud_data = {
             'user_id': user_id,
             'tipo': tipo,
@@ -144,7 +168,7 @@ def actualizar_solicitud(solicitud_id: int, estado: str, motivo: str = None, adm
 def get_admin_keyboard(solicitud_id: int, tipo: str) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
         [
-            InlineKeyboardButton("✅ Aprobar", callback_data=f"apr_{tipo}_{solicitud_id}"),
+            InlineKeyboard极速赛车开奖官网("✅ Aprobar", callback_data=f"apr_{tipo}_{solicitud_id}"),
             InlineKeyboardButton("❌ Rechazar", callback_data=f"rej_{tipo}_{solicitud_id}")
         ]
     ])
@@ -214,10 +238,7 @@ def get_current_price(asset_id: str, currency: str = "USD") -> float:
         }
         url = f"{COINCAP_API_URL}/assets/{coincap_id}"
         
-        logger.info(f"Requesting CoinCap price: {url}")
         response = requests.get(url, headers=headers, timeout=10)
-        logger.info(f"CoinCap response status: {response.status_code}")
-        
         if response.status_code != 200:
             logger.error(f"CoinCap API error: {response.status_code} - {response.text}")
             return None
@@ -228,11 +249,9 @@ def get_current_price(asset_id: str, currency: str = "USD") -> float:
             return None
             
         usd_price = float(data.get("priceUsd", 0))
-        logger.info(f"USD price for {coincap_id}: {usd_price}")
         return usd_price
-            
     except Exception as e:
-        logger.exception(f"EXCEPTION in get_current_price: {e}")
+        logger.error(f"Error getting price: {e}")
         return None
 
 # Obtener datos históricos
@@ -254,36 +273,25 @@ def get_historical_prices(asset_id: str, start_time: datetime, end_time: datetim
             "end": end_ms
         }
         
-        logger.info(f"Requesting historical data: {url}?interval={interval}&start={start_ms}&end={end_ms}")
         response = requests.get(url, headers=headers, params=params, timeout=15)
-        logger.info(f"Historical response status: {response.status_code}")
-        
         if response.status_code != 200:
             logger.error(f"History API error: {response.status_code} - {response.text}")
             return None
         
-        data = response.json().get("data", [])
-        if not data:
-            logger.error("Historical response has no data")
-            
-        return data
+        return response.json().get("data", [])
     except Exception as e:
-        logger.exception(f"EXCEPTION in get_historical_prices: {e}")
+        logger.error(f"Error getting historical prices: {e}")
         return None
 
 # Analizar si se tocó SL o TP
-def analyze_price_history(price_history: list, entry_price: float, sl_price: float, tp_price: float, operation_type: str) -> tuple:
+def analyze_price_history(price_history, entry_price, sl_price, tp_price, operation_type):
     if not price_history:
-        logger.error("No price history to analyze")
         return None, None
         
     sl_touched = False
     tp_touched = False
     sl_time = None
     tp_time = None
-    
-    logger.info(f"Analyzing {len(price_history)} price points...")
-    logger.info(f"Entry: {entry_price}, SL: {sl_price}, TP: {tp_price}, Op: {operation_type}")
     
     for price_point in price_history:
         price = float(price_point.get("priceUsd", 0))
@@ -296,42 +304,33 @@ def analyze_price_history(price_history: list, entry_price: float, sl_price: flo
             if price <= sl_price and not sl_touched:
                 sl_touched = True
                 sl_time = datetime.fromtimestamp(timestamp/1000, timezone.utc)
-                logger.info(f"SL touched at {price} - {sl_time}")
             if price >= tp_price and not tp_touched:
                 tp_touched = True
                 tp_time = datetime.fromtimestamp(timestamp/1000, timezone.utc)
-                logger.info(f"TP touched at {price} - {tp_time}")
         
         elif operation_type == "sell":
             if price >= sl_price and not sl_touched:
                 sl_touched = True
                 sl_time = datetime.fromtimestamp(timestamp/1000, timezone.utc)
-                logger.info(f"SL touched at {price} - {sl_time}")
             if price <= tp_price and not tp_touched:
                 tp_touched = True
                 tp_time = datetime.fromtimestamp(timestamp/1000, timezone.utc)
-                logger.info(f"TP touched at {price} - {tp_time}")
         
         if sl_touched and tp_touched:
             if sl_time < tp_time:
-                logger.info("SL triggered before TP")
                 return "SL", sl_time
             else:
-                logger.info("TP triggered before SL")
                 return "TP", tp_time
     
     if sl_touched:
-        logger.info("Only SL triggered")
         return "SL", sl_time
     if tp_touched:
-        logger.info("Only TP triggered")
         return "TP", tp_time
     
-    logger.info("Neither SL nor TP triggered")
     return None, None
 
-# Generar teclados con mejor organización
-def get_main_keyboard() -> InlineKeyboardMarkup:
+# Generar teclados
+def get_main_keyboard():
     buttons = []
     
     # Organizar activos en filas de 3
@@ -354,15 +353,15 @@ def get_main_keyboard() -> InlineKeyboardMarkup:
     
     return InlineKeyboardMarkup(buttons)
 
-def get_currency_keyboard(asset_id: str) -> InlineKeyboardMarkup:
+def get_currency_keyboard(asset_id):
     return InlineKeyboardMarkup([
         [
             InlineKeyboardButton("💵 USD", callback_data=f"currency_{asset_id}_USD"),
         ],
-        [InlineKeyboardButton("🔙 Menú Principal", callback_data="back_main")]
+        [InlineKeyboardButton("🔙 Menú Principal", callback极速赛车开奖官网="back_main")]
     ])
 
-def get_trade_keyboard(asset_id: str, currency: str) -> InlineKeyboardMarkup:
+def get_trade_keyboard(asset_id, currency):
     return InlineKeyboardMarkup([
         [
             InlineKeyboardButton("🟢 COMPRAR", callback_data=f"trade_{asset_id}_{currency}_buy"),
@@ -371,9 +370,9 @@ def get_trade_keyboard(asset_id: str, currency: str) -> InlineKeyboardMarkup:
         [InlineKeyboardButton("🔙 Atrás", callback_data=f"back_asset_{asset_id}")]
     ])
 
-def get_operations_keyboard(user_id: str) -> InlineKeyboardMarkup:
-    auth_supabase = get_auth_supabase(user_id)
+def get_operations_keyboard(user_id):
     try:
+        auth_supabase = get_auth_supabase(user_id)
         response = auth_supabase.table('operations').select(
             "id, asset, currency, operation_type, entry_price"
         ).eq("user_id", user_id).eq("status", "pendiente").execute()
@@ -399,9 +398,9 @@ def get_operations_keyboard(user_id: str) -> InlineKeyboardMarkup:
     ])
     return InlineKeyboardMarkup(buttons)
 
-def get_history_keyboard(user_id: str) -> InlineKeyboardMarkup:
-    auth_supabase = get_auth_supabase(user_id)
+def get_history_keyboard(user_id):
     try:
+        auth_supabase = get_auth_supabase(user_id)
         response = auth_supabase.table('operations').select(
             "id, asset, currency, operation_type, entry_price, result"
         ).eq("user_id", user_id).eq("status", "cerrada").order("entry_time", desc=True).limit(10).execute()
@@ -437,7 +436,7 @@ def get_history_keyboard(user_id: str) -> InlineKeyboardMarkup:
     ])
     return InlineKeyboardMarkup(buttons)
 
-def get_operation_detail_keyboard(op_id: int, is_history: bool = False) -> InlineKeyboardMarkup:
+def get_operation_detail_keyboard(op_id, is_history=False):
     if is_history:
         return InlineKeyboardMarkup([
             [InlineKeyboardButton("🔙 A Historial", callback_data="history")]
@@ -456,7 +455,7 @@ def get_operation_detail_keyboard(op_id: int, is_history: bool = False) -> Inlin
         ])
 
 # Nuevo teclado de bienvenida
-def get_welcome_keyboard() -> InlineKeyboardMarkup:
+def get_welcome_keyboard():
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("🚀 Empezar a Operar", callback_data="start_trading")]
     ])
@@ -517,11 +516,9 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     elif data.startswith("currency_"):
         _, asset_id, currency = data.split('_')
         asset = ASSETS[asset_id]
-        logger.info(f"Getting price for {asset_id} in {currency}")
         price = get_current_price(asset_id, currency)
         
         if price is None:
-            logger.error(f"Failed to get price for {asset_id}")
             await query.edit_message_text("⚠️ Error al obtener precio. Intenta nuevamente.")
             return
             
@@ -540,18 +537,16 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     elif data.startswith("trade_"):
         _, asset_id, currency, operation_type = data.split('_')
         asset = ASSETS[asset_id]
-        logger.info(f"Starting trade: {asset_id} {currency} {operation_type}")
         price = get_current_price(asset_id, currency)
         
         if price is None:
-            logger.error(f"Price check failed for trade start")
             await query.edit_message_text("⚠️ Error al obtener precio. Intenta nuevamente.")
             return
         
         try:
             auth_supabase = get_auth_supabase(user_id)
             operation_data = {
-                "user_id": user_id,
+                "user_id": user极速赛车开奖官网
                 "asset": asset_id,
                 "currency": currency,
                 "operation_type": operation_type,
@@ -569,7 +564,6 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
                     'operation_type': operation_type,
                     'entry_price': price
                 }
-                logger.info(f"Operation saved: ID {op_id}")
             else:
                 raise Exception("No data in response")
         except Exception as e:
@@ -639,7 +633,6 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     elif data.startswith("view_op_") or data.startswith("view_hist_"):
         is_history = data.startswith("view_hist_")
         op_id = data.split('_')[2]
-        logger.info(f"Viewing operation: {op_id}")
         try:
             auth_supabase = get_auth_supabase(user_id)
             response = auth_supabase.table('operations').select("*").eq("id", op_id).execute()
@@ -648,8 +641,8 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             logger.error(f"Error fetching operation: {e}")
             op_data = None
         
-        if not op_data or op_data['status'] == 'cerrada':
-            await query.edit_message_text("⚠️ Operación no encontrada o ya cerrada.")
+        if not op_data:
+            await query.edit_message_text("⚠️ Operación no encontrada.")
             return
             
         # Verificar que la operación pertenece al usuario
@@ -691,7 +684,7 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         # Si la operación está pendiente, mostrar monto riesgo
         monto_riesgo_info = ""
         if status == "pendiente" and op_data.get('monto_riesgo'):
-            monto_riesgo_info = f"\n• Monto arriesgado: {op_data.get('monto_riesgo'):.2f} CUP"
+            monto_riesgo_info = f"\n• Monto arriesgado: {op_data['monto_riesgo']:.2f} CUP"
         
         message = (
             f"*Detalle de Operación* #{op_id}\n\n"
@@ -713,12 +706,10 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     
     elif data.startswith("check_op_"):
         op_id = data.split('_')[2]
-        logger.info(f"Checking operation: {op_id}")
         await check_operation(update, context, op_id)
     
     elif data.startswith("close_op_"):
         op_id = data.split('_')[2]
-        logger.info(f"Closing operation: {op_id}")
         try:
             auth_supabase = get_auth_supabase(user_id)
             # Obtener operación
@@ -889,7 +880,7 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
                 # Actualizar saldo
                 nuevo_saldo = actualizar_saldo(solicitud['user_id'], -solicitud['monto'])
                 estado = 'aprobado'
-                mensaje_user = f"✅ Tu retiro de {solicitud['monto']:.2f} CUP ha sido aprobado. El dinero será transferido pronto."
+                mensaje_user = f"✅ Tu retiro de {solicitud['极速赛车开奖官网']:.2f} CUP ha sido aprobado. El dinero será transferido pronto."
             
             # Actualizar estado de solicitud
             actualizar_solicitud(solicitud_id, estado)
@@ -915,7 +906,6 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 async def set_sl_tp(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user_id = str(update.message.from_user.id)
     text = update.message.text.strip()
-    logger.info(f"Received SL/TP from user {user_id}: {text}")
     
     if 'pending_operation' not in context.user_data:
         return
@@ -958,7 +948,7 @@ async def set_sl_tp(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         return
     
     sl_line = lines[0].strip().upper()
-    tp_line = lines[1].strip().upper()
+    tp_line = lines[极速赛车开奖官网].strip().upper()
     
     if not sl_line.startswith("SL ") or not tp_line.startswith("TP "):
         await update.message.reply_text("Formato incorrecto. Por favor comienza con 'SL' y 'TP'.")
@@ -1005,7 +995,7 @@ async def set_sl_tp(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             f"✅ *Stop Loss y Take Profit configurados!*\n\n"
             f"• Activo: {asset['emoji']} {asset['name']} ({asset['symbol']})\n"
             f"• 🛑 Stop Loss: {sl_price:.4f} {currency} ({pips_to_sl:.1f} pips = {sl_cup:.2f} CUP)\n"
-            f"• 🎯 Take Profit: {tp_price:.4f} {currency} ({pips_to_tp:.1f} pips = {tp_cup:.2f} CUP)\n\n"
+            f"• 🎯 Take Profit: {tp_price:.4f} {currency} ({p极速赛车开奖官网}_to_tp:.1f} pips = {tp_cup:.2f} CUP)\n\n"
             f"Ahora, por favor ingresa el monto que deseas arriesgar en CUP:",
             parse_mode="Markdown"
         )
@@ -1048,12 +1038,12 @@ async def recibir_monto_riesgo(update: Update, context: ContextTypes.DEFAULT_TYP
         
         await update.message.reply_text(
             f"✅ *Monto de riesgo configurado!*\n\n"
-            f"• Monto arriesgado: {monto_riesgo:.2f} CUP\n"
+            f"• Monto arriesgado: {monto_riesgo:.2极速赛车开奖官网} CUP\n"
             f"• Valor por pip: {valor_pip_cup:.2f} CUP\n"
             f"• Ganancia/pérdida por pip: {valor_pip_cup:.2f} CUP\n\n"
             f"Operación lista para monitoreo.",
             parse_mode="Markdown",
-            reply_markup=get_main_keyboard()
+            reply_markup=get_main极速赛车开奖官网()
         )
         del context.user_data['pending_operation']
     except Exception as e:
@@ -1238,9 +1228,7 @@ async def check_operation(update: Update, context: ContextTypes.DEFAULT_TYPE, op
     # Para debugging: usar periodo más corto si es necesario
     if (end_time - start_time) > timedelta(hours=24):
         start_time = end_time - timedelta(hours=24)
-        logger.info(f"Adjusted start time to last 24 hours for efficiency")
     
-    logger.info(f"Getting history from {start_time} to {end_time}")
     price_history = get_historical_prices(op_data['asset'], start_time, end_time, interval="m1")
     if not price_history:
         await query.edit_message_text("⚠️ Error al obtener datos históricos. Inténtalo más tarde.")
@@ -1261,17 +1249,13 @@ async def check_operation(update: Update, context: ContextTypes.DEFAULT_TYPE, op
     if operation_type == "buy":
         if current_price <= sl_price:
             current_touch = ("SL", datetime.now(timezone.utc))
-            logger.info(f"Precio ACTUAL activó SL a {current_price}")
         elif current_price >= tp_price:
             current_touch = ("TP", datetime.now(timezone.utc))
-            logger.info(f"Precio ACTUAL activó TP a {current_price}")
     else:  # sell
         if current_price >= sl_price:
             current_touch = ("SL", datetime.now(timezone.utc))
-            logger.info(f"Precio ACTUAL activó SL a {current_price}")
         elif current_price <= tp_price:
             current_touch = ("TP", datetime.now(timezone.utc))
-            logger.info(f"Precio ACTUAL activó TP a {current_price}")
     
     # Si no se activó con el precio actual, analizar histórico
     if current_touch:
@@ -1305,13 +1289,9 @@ async def check_operation(update: Update, context: ContextTypes.DEFAULT_TYPE, op
     
     # Calcular distancia a SL y TP
     if operation_type == "buy":
-        to_sl = entry_price - sl_price
-        to_tp = tp_price - entry_price
         current_to_sl = current_price - sl_price
         current_to_tp = tp_price - current_price
     else:  # sell
-        to_sl = sl_price - entry_price
-        to_tp = entry_price - tp_price
         current_to_sl = sl_price - current_price
         current_to_tp = current_price - tp_price
     
@@ -1427,7 +1407,7 @@ async def check_operation(update: Update, context: ContextTypes.DEFAULT_TYPE, op
         reply_markup=get_operation_detail_keyboard(op_id, False))
     
 
-# Main con webhook para Render
+# Main con webhook
 def main():
     # Obtener configuración de Render
     PORT = int(os.environ.get('PORT', 10000))
