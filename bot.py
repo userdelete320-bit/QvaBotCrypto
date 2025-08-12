@@ -55,7 +55,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Función para crear cliente Supabase autenticado con JWT
+# Función para crear cliente Supabase autenticado con JWT - CORREGIDA
 def get_auth_supabase(user_id: str) -> Client:
     # Crear token JWT
     payload = {
@@ -64,13 +64,15 @@ def get_auth_supabase(user_id: str) -> Client:
         "exp": datetime.now(timezone.utc) + timedelta(minutes=30)
     }
     token = jwt.encode(payload, JWT_SECRET, algorithm="HS256")
-    return create_client(SUPABASE_URL, SUPABASE_KEY, {
-        'global': {
-            'headers': {
-                'Authorization': f'Bearer {token}'
-            }
+    
+    # Configuración CORRECTA de headers
+    options = {
+        'headers': {
+            'Authorization': f'Bearer {token}'
         }
-    })
+    }
+    
+    return create_client(SUPABASE_URL, SUPABASE_KEY, options)
 
 # Gestión de saldo
 def obtener_saldo(user_id: str) -> float:
@@ -689,7 +691,7 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         # Si la operación está pendiente, mostrar monto riesgo
         monto_riesgo_info = ""
         if status == "pendiente" and op_data.get('monto_riesgo'):
-            monto_riesgo_info = f"\n• Monto arriesgado: {op_data['monto_riesgo']:.2f} CUP"
+            monto_riesgo_info = f"\n• Monto arriesgado: {op_data.get('monto_riesgo'):.2f} CUP"
         
         message = (
             f"*Detalle de Operación* #{op_id}\n\n"
