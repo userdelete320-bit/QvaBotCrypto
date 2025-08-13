@@ -9,7 +9,8 @@ from telegram.ext import (
     CallbackQueryHandler,
     ContextTypes,
     MessageHandler,
-    filters
+    filters,
+    JobQueue
 )
 from supabase import create_client, Client
 
@@ -1575,6 +1576,49 @@ async def process_leverage_selection(query, context, asset_id, currency, operati
         parse_mode="Markdown"
     )
 
+# Función unificada para mensajes de texto
+async def handle_text_messages(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    user_data = context.user_data
+    
+    if 'pending_leverage' in user_data:
+        await recibir_apalancamiento(update, context)
+    elif 'pending_operation' in user_data and 'monto_riesgo' not in user_data['pending_operation']:
+        await recibir_monto_riesgo(update, context)
+    elif 'pending_operation' in user_data and 'monto_riesgo' in user_data['pending_operation']:
+        await set_sl_tp(update, context)
+    elif 'solicitud' in user_data and 'monto' not in user_data['solicitud']:
+        await recibir_monto(update, context)
+    elif 'solicitud' in user_data and 'monto' in user_data['solicitud']:
+        # En este caso, el siguiente paso puede ser una foto (para depósito) o texto (para retiro)
+        # Pero como esta función solo maneja texto, lo dejamos para el handler de fotos
+        await update.message.reply_text("Por favor, envía el comprobante (foto) o los datos de retiro (texto) según corresponda.")
+    elif 'rechazo' in user_data:
+        await recibir_motivo(update, context)
+    else:
+        # Si no coincide con ningún estado, mostrar menú principal
+        await update.message.reply_text(
+            "Selecciona una opción:",
+            reply_markup=get_main_keyboard()
+        )
+
+# Handler para fotos (solo para comprobantes de depósito)
+async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    user_data = context.user_data
+    if 'solicitud' in user_data and 'monto' in user_data['solicitud'] and user_data['solicitud']['tipo'] == 'deposito':
+        await recibir_datos(update, context)
+    else:
+        # Si no está en el estado de depósito, ignorar la foto
+        pass
+
+# Función keep-alive
+async def keep_alive(context: ContextTypes.DEFAULT_TYPE):
+    try:
+        # Hacer una petición a una URL conocida para mantener la app activa
+        requests.get("https://google.com", timeout=5)
+        logger.info("✅ Keep-alive ejecutado")
+    except Exception as e:
+        logger.warning(f"⚠️ Keep-alive falló: {e}")
+
 # Main con webhook
 def main():
     PORT = int(os.environ.get('PORT', 10000))
@@ -1582,18 +1626,17 @@ def main():
     
     application = Application.builder().token(TOKEN).build()
     
+    # Configurar keep-alive cada 5 minutos
+    job_queue = application.job_queue
+    job_queue.run_repeating(keep_alive, interval=300, first=10)  # 300 segundos = 5 minutos
+    
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("setsaldo", set_saldo))
     application.add_handler(CallbackQueryHandler(button_click))
     
-    # Handlers en orden de prioridad
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, recibir_apalancamiento))
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, recibir_monto_riesgo))
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, set_sl_tp))
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, recibir_monto))
-    application.add_handler(MessageHandler(filters.PHOTO, recibir_datos))
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, recibir_datos))
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, recibir_motivo))
+    # Handlers para mensajes
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_messages))
+    application.add_handler(MessageHandler(filters.PHOTO, handle_photo))
     
     logger.info("🤖 Iniciando Bot de Trading en modo Webhook")
     logger.info(f"🔗 URL del webhook: {WEBHOOK_URL}/{TOKEN}")
