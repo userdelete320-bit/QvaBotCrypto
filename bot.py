@@ -92,13 +92,15 @@ def calcular_pips_movidos(precio_inicial, precio_final, asset_id):
     return abs(precio_final - precio_inicial) / pip_value
 
 def calcular_max_sl(monto_riesgo, asset_id, entry_price, operation_type, leverage, cup_rate):
-    """Calcula el precio máximo permitido para el SL basado en el monto de riesgo"""
+    """Calcula el precio MÍNIMO/MÁXIMO permitido para el SL basado en el monto de riesgo"""
     valor_pip = calcular_valor_pip(asset_id, cup_rate) * leverage
     max_pips = monto_riesgo / valor_pip
     
     if operation_type == "buy":
+        # Para COMPRAS: SL debe ser mayor que este precio mínimo
         return entry_price - (max_pips * PIP_VALUES[asset_id])
     else:  # sell
+        # Para VENTAS: SL debe ser menor que este precio máximo
         return entry_price + (max_pips * PIP_VALUES[asset_id])
 
 # Gestión de saldo
@@ -979,7 +981,7 @@ async def recibir_monto_riesgo(update: Update, context: ContextTypes.DEFAULT_TYP
     # Guardar el monto de riesgo en el contexto
     context.user_data['pending_operation']['monto_riesgo'] = monto_riesgo
     
-    # Calcular el SL máximo permitido
+    # Calcular el SL mínimo/máximo permitido
     max_sl = calcular_max_sl(
         monto_riesgo,
         op_data['asset_id'],
@@ -999,11 +1001,11 @@ async def recibir_monto_riesgo(update: Update, context: ContextTypes.DEFAULT_TYP
     
     # Determinar la dirección del SL según el tipo de operación
     if op_data['operation_type'] == "buy":
-        sl_direction = "por debajo"
-        sl_example = entry_price * 0.98
+        sl_direction = "no puede ser menor que"
+        sl_example = max_sl + (entry_price - max_sl) * 0.5  # Ejemplo en el rango medio
     else:
-        sl_direction = "por encima"
-        sl_example = entry_price * 1.02
+        sl_direction = "no puede ser mayor que"
+        sl_example = max_sl - (max_sl - entry_price) * 0.5  # Ejemplo en el rango medio
     
     await update.message.reply_text(
         f"✅ *Monto de riesgo configurado!*\n\n"
@@ -1012,7 +1014,7 @@ async def recibir_monto_riesgo(update: Update, context: ContextTypes.DEFAULT_TYP
         f"• Ganancia/pérdida por pip: {valor_pip_cup:.2f} CUP\n\n"
         f"Ahora establece el Stop Loss (SL) y Take Profit (TP).\n\n"
         f"⚠️ *Límite de Stop Loss*:\n"
-        f"Debido a tu monto arriesgado, el SL debe estar {sl_direction} de:\n"
+        f"Debido a tu monto arriesgado, el SL {sl_direction}:\n"
         f"`{max_sl:.4f} {currency}`\n\n"
         f"Envía el mensaje en el formato:\n"
         f"SL [precio]\n"
@@ -1088,7 +1090,7 @@ async def set_sl_tp(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await update.message.reply_text("Precios inválidos. Asegúrate de que sean números.")
         return
     
-    # Calcular el SL máximo permitido
+    # Calcular el SL mínimo/máximo permitido
     max_sl = calcular_max_sl(
         monto_riesgo,
         asset_id,
@@ -1100,10 +1102,10 @@ async def set_sl_tp(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     
     # Validar SL contra el límite máximo
     if operation_type == "buy":
-        if sl_price > max_sl:
+        if sl_price < max_sl:  # Corregido: SL no puede ser menor que el límite
             await update.message.reply_text(
-                f"❌ Stop Loss demasiado alto. Para proteger tu monto arriesgado, "
-                f"el SL debe ser menor o igual a {max_sl:.4f} {currency}.\n\n"
+                f"❌ Stop Loss demasiado bajo. Para proteger tu monto arriesgado, "
+                f"el SL no puede ser menor que {max_sl:.4f} {currency}.\n\n"
                 f"Por favor, ingresa un SL válido:"
             )
             return
@@ -1114,10 +1116,10 @@ async def set_sl_tp(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             await update.message.reply_text(f"❌ Para COMPRA, el Take Profit debe ser mayor que el precio de entrada ({entry_price:.4f})")
             return
     else:
-        if sl_price < max_sl:
+        if sl_price > max_sl:  # Corregido: SL no puede ser mayor que el límite
             await update.message.reply_text(
-                f"❌ Stop Loss demasiado bajo. Para proteger tu monto arriesgado, "
-                f"el SL debe ser mayor o igual a {max_sl:.4f} {currency}.\n\n"
+                f"❌ Stop Loss demasiado alto. Para proteger tu monto arriesgado, "
+                f"el SL no puede ser mayor que {max_sl:.4f} {currency}.\n\n"
                 f"Por favor, ingresa un SL válido:"
             )
             return
