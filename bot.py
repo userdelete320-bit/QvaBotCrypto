@@ -20,13 +20,13 @@ ADMIN_ID = "5376388604"
 COINCAP_API_KEY = "c0b9354ec2c2d06d6395519f432b056c06f6340b62b72de1cf71a44ed9c6a36e"
 COINCAP_API_URL = "https://rest.coincap.io/v3"
 MAX_DAILY_CHECKS = 80
-MIN_DEPOSITO = 5000
+MIN_DEPOSITO = 5000  # Actualizado a 5000 CUP
 MIN_RIESGO = 5000
 MIN_RETIRO = 6500
 CUP_RATE = 440
 CONFIRMATION_NUMBER = "59190241"
 CARD_NUMBER = "9227 0699 9532 8054"
-CANAL_ID = os.getenv("-1002479699968", "")  # ID del canal CromwellTrading
+CANAL_ID = os.getenv("CANAL_ID", "-1002479699968")  # ID del canal CromwellTrading
 
 # Mapeo de activos
 ASSETS = {
@@ -1252,13 +1252,12 @@ async def recibir_datos(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         return
     
     if tipo == 'deposito' and update.message.photo:
-        # Guardar la mejor calidad de foto (última en la lista)
+        # Obtener file_id de la foto
         photo = update.message.photo[-1]
-        file = await photo.get_file()
-        file_path = file.file_path
+        file_id = photo.file_id
         
-        # Crear solicitud
-        solicitud_id = crear_solicitud(user_id, 'deposito', monto, comprobante=file_path)
+        # Crear solicitud usando file_id
+        solicitud_id = crear_solicitud(user_id, 'deposito', monto, comprobante=file_id)
         
         if solicitud_id:
             # Notificar al admin y al canal
@@ -1280,7 +1279,7 @@ async def recibir_datos(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
                 try:
                     await context.bot.send_photo(
                         chat_id=CANAL_ID,
-                        photo=file_path,
+                        photo=file_id,
                         caption=canal_message,
                         parse_mode="Markdown",
                         reply_markup=keyboard
@@ -1290,7 +1289,7 @@ async def recibir_datos(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
                     # Notificar al admin si falla
                     await context.bot.send_photo(
                         chat_id=ADMIN_ID,
-                        photo=file_path,
+                        photo=file_id,
                         caption=f"{canal_message}\n\n⚠️ Error enviando al canal: {e}",
                         parse_mode="Markdown",
                         reply_markup=keyboard
@@ -1299,7 +1298,7 @@ async def recibir_datos(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
             # Siempre enviar al admin
             await context.bot.send_photo(
                 chat_id=ADMIN_ID,
-                photo=file_path,
+                photo=file_id,
                 caption=canal_message,
                 parse_mode="Markdown",
                 reply_markup=keyboard
@@ -1756,18 +1755,13 @@ def main():
     logger.info(f"🔗 URL del webhook: {WEBHOOK_URL}/{TOKEN}")
     logger.info(f"🔌 Escuchando en puerto: {PORT}")
     
-    # Configuración de webhook mejorada
+    # Configuración de webhook simplificada
     try:
         application.run_webhook(
             listen="0.0.0.0",
             port=PORT,
-            url_path=TOKEN,
             webhook_url=f"{WEBHOOK_URL}/{TOKEN}",
-            cert=None,
-            drop_pending_updates=True,
-            key="private.key",
-            cert_pem="cert.pem",
-            webhook_cert="public.pem"
+            drop_pending_updates=True
         )
     except Exception as e:
         logger.error(f"Error en webhook: {e}")
