@@ -23,7 +23,7 @@ MIN_DEPOSITO = 3000
 MIN_RIESGO = 5000  # Mínimo de 5000 CUP para arriesgar
 CUP_RATE = 440
 
-# Mapeo de activos CORREGIDO (emoji key fix)
+# Mapeo de activos
 ASSETS = {
     "bitcoin": {"symbol": "BTC", "name": "Bitcoin", "coincap_id": "bitcoin", "emoji": "🪙"},
     "ethereum": {"symbol": "ETH", "name": "Ethereum", "coincap_id": "ethereum", "emoji": "🔷"},
