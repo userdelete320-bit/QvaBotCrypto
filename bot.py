@@ -1,7 +1,6 @@
 import os
 import logging
 import requests
-import jwt
 from datetime import datetime, timedelta, timezone
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
@@ -20,20 +19,19 @@ ADMIN_ID = "5376388604"
 COINCAP_API_KEY = "c0b9354ec2c2d06d6395519f432b056c06f6340b62b72de1cf71a44ed9c6a36e"
 COINCAP_API_URL = "https://rest.coincap.io/v3"
 MAX_DAILY_CHECKS = 80
-JWT_SECRET = "/j/VuxoXGQ+jsz+xx2H5lq8Xkdr85y+LjaZHrcu/i极速赛车开奖官网YSWsVaCpZD0JgGy8DsJSd2AzUYBUi7D4ZUjuzQyi2Avw=="
 MIN_DEPOSITO = 3000
 CUP_RATE = 440
 
-# Mapeo de activos
+# Mapeo de activos CORREGIDO (emoji key fix)
 ASSETS = {
     "bitcoin": {"symbol": "BTC", "name": "Bitcoin", "coincap_id": "bitcoin", "emoji": "🪙"},
     "ethereum": {"symbol": "ETH", "name": "Ethereum", "coincap_id": "ethereum", "emoji": "🔷"},
     "binance-coin": {"symbol": "BNB", "name": "Binance Coin", "coincap_id": "binance-coin", "emoji": "🅱️"},
     "tether": {"symbol": "USDT", "name": "Tether", "coincap_id": "tether", "emoji": "💵"},
     "dai": {"symbol": "DAI", "name": "Dai", "coincap_id": "dai", "emoji": "🌀"},
-    "usd-coin": {"symbol": "USDC", "name": "USD Coin", "coincap_id": "usd-coin", "emoji": "💲"},
+    "usd-coin": {"symbol": "USDC", "name": "USD Coin", "coincap_id": "usd-coin", "emoji": "💲"},  # Fixed
     "ripple": {"symbol": "XRP", "name": "XRP", "coincap_id": "ripple", "emoji": "✖️"},
-    "cardano": {"symbol": "ADA", "name": "Cardano", "coincap_id": "cardano", "emo极速赛车开奖官网ji": "🅰️"},
+    "cardano": {"symbol": "ADA", "name": "Cardano", "coincap_id": "cardano", "emoji": "🅰️"},  # Fixed
     "solana": {"symbol": "SOL", "name": "Solana", "coincap_id": "solana", "emoji": "☀️"},
     "dogecoin": {"symbol": "DOGE", "name": "Dogecoin", "coincap_id": "dogecoin", "emoji": "🐶"},
     "polkadot": {"symbol": "DOT", "name": "Polkadot", "coincap_id": "polkadot", "emoji": "🔴"},
@@ -68,7 +66,7 @@ def calcular_ganancia_pips(pips, asset_id, cup_rate, apalancamiento=1):
     return pips * calcular_valor_pip(asset_id, cup_rate) * apalancamiento
 
 def calcular_pips_movidos(precio_inicial, precio_final, asset_id):
-    pip_value = calcular_valor_pip(asset_id, 1)  # Tasa 1 para valor base
+    pip_value = calcular_valor_pip(asset_id, 1)
     return abs(precio_final - precio_inicial) / pip_value
 
 # Gestión de saldo
@@ -202,7 +200,7 @@ def get_historical_prices(asset_id: str, start_time: datetime, end_time: datetim
         start_ms = int(start_time.timestamp() * 1000)
         end_ms = int(end_time.timestamp() * 1000)
         
-        url = f"{极速赛车开奖官网COINCAP_API_URL}/assets/{coincap_id}/history"
+        url = f"{COINCAP_API_URL}/assets/{coincap_id}/history"
         params = {
             "interval": interval,
             "start": start_ms,
@@ -404,7 +402,7 @@ def get_operation_detail_keyboard(op_id, is_history=False):
             [InlineKeyboardButton("🔙 A Operaciones", callback_data="operations")]
         ])
 
-# Nuevo teclado de bienvenida
+# Teclado de bienvenida
 def get_welcome_keyboard():
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("🚀 Empezar a Operar", callback_data="start_trading")]
@@ -528,7 +526,7 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             f"Ahora, por favor establece el Stop Loss (SL) y Take Profit (TP).\n\n"
             f"Envía el mensaje en el formato:\n"
             f"SL [precio]\n"
-            f"TP [极速赛车开奖官网precio]\n\n"
+            f"TP [precio]\n\n"
             f"Ejemplo:\n"
             f"SL {price*0.95:.2f}\n"
             f"TP {price*1.05:.2f}",
@@ -726,7 +724,7 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
                 return
                 
             # Verificar propiedad
-            if op_data['user极速赛车开奖官网_id'] != user_id:
+            if op_data['user_id'] != user_id:
                 await query.edit_message_text("⚠️ No tienes permiso para modificar esta operación.")
                 return
                 
@@ -1130,7 +1128,7 @@ async def recibir_motivo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     await update.message.reply_text("✅ Rechazo registrado y notificado al usuario.")
     del context.user_data['rechazo']
 
-# Función para comprobar operación (con SL/TP visibles)
+# Función para comprobar operación
 async def check_operation(update: Update, context: ContextTypes.DEFAULT_TYPE, op_id: int):
     query = update.callback_query
     user_id = str(query.from_user.id)
@@ -1153,11 +1151,10 @@ async def check_operation(update: Update, context: ContextTypes.DEFAULT_TYPE, op
         await query.edit_message_text("⚠️ Operación no disponible para verificación.")
         return
     
-    # Convertir a UTC para evitar problemas de zona horaria
+    # Convertir a UTC
     start_time = datetime.fromisoformat(op_data['entry_time']).astimezone(timezone.utc)
     end_time = datetime.now(timezone.utc)
     
-    # Para debugging: usar periodo más corto si es necesario
     if (end_time - start_time) > timedelta(hours=24):
         start_time = end_time - timedelta(hours=24)
     
@@ -1166,13 +1163,12 @@ async def check_operation(update: Update, context: ContextTypes.DEFAULT_TYPE, op
         await query.edit_message_text("⚠️ Error al obtener datos históricos. Inténtalo más tarde.")
         return
     
-    # Obtener precio actual para detección en tiempo real
+    # Obtener precio actual
     current_price = get_current_price(op_data['asset'], op_data['currency'])
     if current_price is None:
         await query.edit_message_text("⚠️ Error al obtener precio actual.")
         return
     
-    # Primero verificar si el precio ACTUAL alcanza SL/TP
     operation_type = op_data['operation_type']
     sl_price = op_data['stop_loss']
     tp_price = op_data['take_profit']
@@ -1189,7 +1185,6 @@ async def check_operation(update: Update, context: ContextTypes.DEFAULT_TYPE, op
         elif current_price <= tp_price:
             current_touch = ("TP", datetime.now(timezone.utc))
     
-    # Si no se activó con el precio actual, analizar histórico
     if current_touch:
         result, touch_time = current_touch
     else:
@@ -1208,11 +1203,10 @@ async def check_operation(update: Update, context: ContextTypes.DEFAULT_TYPE, op
     currency = op_data['currency']
     entry_price = op_data['entry_price']
     
-    # Calcular pips movidos desde la entrada hasta el precio actual
+    # Calcular pips movidos
     pips_movidos = calcular_pips_movidos(entry_price, current_price, op_data['asset'])
     # Calcular ganancia/pérdida en CUP
     cambio_cup = calcular_ganancia_pips(pips_movidos, op_data['asset'], CUP_RATE)
-    # Para ventas, la dirección es inversa
     if operation_type == "sell":
         cambio_cup = -cambio_cup
     
@@ -1233,9 +1227,9 @@ async def check_operation(update: Update, context: ContextTypes.DEFAULT_TYPE, op
     current_pips_to_sl = calcular_pips_movidos(current_price, sl_price, op_data['asset'])
     current_pips_to_tp = calcular_pips_movidos(current_price, tp_price, op_data['asset'])
     
-    # Calcular porcentajes de avance hacia SL/TP
+    # Calcular porcentajes
     sl_percentage = (current_pips_to_sl / pips_to_sl) * 100 if pips_to_sl != 0 else 0
-    tp_percentage = (current_pips_to_tp / pips_to_tp) * 100 if p极速赛车开奖官网ips_to_tp != 0 else 0
+    tp_percentage = (current_pips_to_tp / pips_to_tp) * 100 if pips_to_tp != 0 else 0
     
     # Determinar precio de salida
     exit_price = None
@@ -1245,17 +1239,16 @@ async def check_operation(update: Update, context: ContextTypes.DEFAULT_TYPE, op
         exit_price = tp_price
     
     if result == "SL":
-        # Calcular pérdida (pips hasta SL)
+        # Calcular pérdida
         pips_result = pips_to_sl
         perdida_cup = calcular_ganancia_pips(pips_result, op_data['asset'], CUP_RATE)
-        # Para ventas, la dirección es inversa
         if operation_type == "sell":
             perdida_cup = -perdida_cup
         
         # Actualizar saldo
         actualizar_saldo(user_id, perdida_cup)
         
-        # Actualizar operación como cerrada
+        # Actualizar operación
         update_data = {
             "status": "cerrada",
             "result": "loss",
@@ -1276,17 +1269,16 @@ async def check_operation(update: Update, context: ContextTypes.DEFAULT_TYPE, op
         )
         
     elif result == "TP":
-        # Calcular ganancia (pips hasta TP)
+        # Calcular ganancia
         pips_result = pips_to_tp
         ganancia_cup = calcular_ganancia_pips(pips_result, op_data['asset'], CUP_RATE) * 0.8  # 80% de ganancia
-        # Para ventas, la dirección es inversa
         if operation_type == "sell":
             ganancia_cup = -ganancia_cup
         
         # Actualizar saldo
         actualizar_saldo(user_id, ganancia_cup)
         
-        # Actualizar operación como cerrada
+        # Actualizar operación
         update_data = {
             "status": "cerrada",
             "result": "profit",
@@ -1307,7 +1299,7 @@ async def check_operation(update: Update, context: ContextTypes.DEFAULT_TYPE, op
         )
         
     else:
-        # Mostrar SL y TP en el estado actual
+        # Mostrar estado actual
         sl_tp_info = (
             f"• 🛑 Stop Loss: {sl_price:.4f} {currency}\n"
             f"   - Distancia: {current_to_sl:.4f} (queda {current_pips_to_sl:.1f} pips, {sl_percentage:.1f}%)\n"
@@ -1339,18 +1331,15 @@ async def check_operation(update: Update, context: ContextTypes.DEFAULT_TYPE, op
 
 # Main con webhook
 def main():
-    # Obtener configuración de Render
     PORT = int(os.environ.get('PORT', 10000))
     WEBHOOK_URL = os.environ.get('WEBHOOK_URL', 'https://qvabotcrypto.onrender.com')
     
-    # Crear aplicación
     application = Application.builder().token(TOKEN).build()
     
-    # Registrar handlers
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CallbackQueryHandler(button_click))
     
-    # Agregar handlers en orden de prioridad
+    # Handlers en orden de prioridad
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, set_sl_tp))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, recibir_monto_riesgo))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, recibir_monto))
@@ -1362,7 +1351,6 @@ def main():
     logger.info(f"🔗 URL del webhook: {WEBHOOK_URL}/{TOKEN}")
     logger.info(f"🔌 Escuchando en puerto: {PORT}")
     
-    # Configurar webhook
     application.run_webhook(
         listen="0.0.0.0",
         port=PORT,
