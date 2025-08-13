@@ -26,7 +26,7 @@ MIN_RETIRO = 6500
 CUP_RATE = 440
 CONFIRMATION_NUMBER = "59190241"
 CARD_NUMBER = "9227 0699 9532 8054"
-CANAL_ID = os.getenv("CANAL_ID", "")  # ID del canal CromwellTrading
+CANAL_ID = os.getenv("-1002479699968", "")  # ID del canal CromwellTrading
 
 # Mapeo de activos
 ASSETS = {
