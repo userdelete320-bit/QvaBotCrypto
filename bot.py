@@ -10,8 +10,7 @@ from telegram.ext import (
     ContextTypes,
     MessageHandler,
     filters,
-    JobQueue,
-    CallbackContext
+    JobQueue
 )
 from supabase import create_client, Client
 
@@ -21,13 +20,13 @@ ADMIN_ID = "5376388604"
 COINCAP_API_KEY = "c0b9354ec2c2d06d6395519f432b056c06f6340b62b72de1cf71a44ed9c6a36e"
 COINCAP_API_URL = "https://rest.coincap.io/v3"
 MAX_DAILY_CHECKS = 80
-MIN_DEPOSITO = 5000
+MIN_DEPOSITO = 3000
 MIN_RIESGO = 5000
 MIN_RETIRO = 6500
 CUP_RATE = 440
 CONFIRMATION_NUMBER = "59190241"
 CARD_NUMBER = "9227 0699 9532 8054"
-GROUP_ID = os.getenv("GROUP_ID", "")  # Se configura dinámicamente
+CANAL_ID = os.getenv("CANAL_ID", "")  # ID del canal CromwellTrading
 
 # Mapeo de activos
 ASSETS = {
@@ -1262,11 +1261,11 @@ async def recibir_datos(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         solicitud_id = crear_solicitud(user_id, 'deposito', monto, comprobante=file_path)
         
         if solicitud_id:
-            # Notificar al admin y al grupo
+            # Notificar al admin y al canal
             keyboard = get_admin_keyboard(solicitud_id, 'deposito')
             
-            # Mensaje para el grupo
-            grupo_message = (
+            # Mensaje para el canal
+            canal_message = (
                 f"📥 *Nueva solicitud de depósito*\n\n"
                 f"• Usuario: {user.full_name} ({username})\n"
                 f"• ID: `{user_id}`\n"
@@ -1276,26 +1275,23 @@ async def recibir_datos(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
                 f"• Número confirmación: `{CONFIRMATION_NUMBER}`"
             )
             
-            # Obtener ID de grupo dinámico
-            group_id = context.bot_data.get('group_id', GROUP_ID)
-            
-            # Enviar notificación
-            if group_id:
+            # Enviar notificación al canal si está configurado
+            if CANAL_ID:
                 try:
                     await context.bot.send_photo(
-                        chat_id=group_id,
+                        chat_id=CANAL_ID,
                         photo=file_path,
-                        caption=grupo_message,
+                        caption=canal_message,
                         parse_mode="Markdown",
                         reply_markup=keyboard
                     )
                 except Exception as e:
-                    logger.error(f"Error enviando al grupo: {e}")
+                    logger.error(f"Error enviando al canal: {e}")
                     # Notificar al admin si falla
                     await context.bot.send_photo(
                         chat_id=ADMIN_ID,
                         photo=file_path,
-                        caption=f"{grupo_message}\n\n⚠️ Error enviando al grupo: {e}",
+                        caption=f"{canal_message}\n\n⚠️ Error enviando al canal: {e}",
                         parse_mode="Markdown",
                         reply_markup=keyboard
                     )
@@ -1304,7 +1300,7 @@ async def recibir_datos(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
             await context.bot.send_photo(
                 chat_id=ADMIN_ID,
                 photo=file_path,
-                caption=grupo_message,
+                caption=canal_message,
                 parse_mode="Markdown",
                 reply_markup=keyboard
             )
@@ -1325,11 +1321,11 @@ async def recibir_datos(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         solicitud_id = crear_solicitud(user_id, 'retiro', monto, datos=datos)
         
         if solicitud_id:
-            # Notificar al admin y al grupo
+            # Notificar al admin y al canal
             keyboard = get_admin_keyboard(solicitud_id, 'retiro')
             
-            # Mensaje para el grupo
-            grupo_message = (
+            # Mensaje para el canal
+            canal_message = (
                 f"📤 *Nueva solicitud de retiro*\n\n"
                 f"• Usuario: {user.full_name} ({username})\n"
                 f"• ID: `{user_id}`\n"
@@ -1338,24 +1334,21 @@ async def recibir_datos(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
                 f"• Datos:\n`{datos}`"
             )
             
-            # Obtener ID de grupo dinámico
-            group_id = context.bot_data.get('group_id', GROUP_ID)
-            
-            # Enviar notificación
-            if group_id:
+            # Enviar notificación al canal si está configurado
+            if CANAL_ID:
                 try:
                     await context.bot.send_message(
-                        chat_id=group_id,
-                        text=grupo_message,
+                        chat_id=CANAL_ID,
+                        text=canal_message,
                         parse_mode="Markdown",
                         reply_markup=keyboard
                     )
                 except Exception as e:
-                    logger.error(f"Error enviando al grupo: {e}")
+                    logger.error(f"Error enviando al canal: {e}")
                     # Notificar al admin si falla
                     await context.bot.send_message(
                         chat_id=ADMIN_ID,
-                        text=f"{grupo_message}\n\n⚠️ Error enviando al grupo: {e}",
+                        text=f"{canal_message}\n\n⚠️ Error enviando al canal: {e}",
                         parse_mode="Markdown",
                         reply_markup=keyboard
                     )
@@ -1363,7 +1356,7 @@ async def recibir_datos(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
             # Siempre enviar al admin
             await context.bot.send_message(
                 chat_id=ADMIN_ID,
-                text=grupo_message,
+                text=canal_message,
                 parse_mode="Markdown",
                 reply_markup=keyboard
             )
@@ -1638,26 +1631,6 @@ async def set_saldo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     nuevo_saldo = actualizar_saldo(target_user_id, monto)
     await update.message.reply_text(f"✅ Saldo de {target_user_id} actualizado a {nuevo_saldo:.2f} CUP")
 
-# Comando para establecer ID de grupo
-async def set_group_id(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    user_id = str(update.message.from_user.id)
-    if user_id != ADMIN_ID:
-        await update.message.reply_text("⚠️ Solo el administrador puede usar este comando.")
-        return
-        
-    args = context.args
-    if not args:
-        await update.message.reply_text("Uso: /setgroupid [id_grupo]")
-        return
-        
-    try:
-        group_id = args[0]
-        context.bot_data['group_id'] = group_id
-        await update.message.reply_text(f"✅ ID de grupo configurado a: {group_id}")
-    except Exception as e:
-        logger.error(f"Error setting group ID: {e}")
-        await update.message.reply_text("⚠️ Error al configurar el ID del grupo.")
-
 # Comando para obtener ID de chat
 async def get_chat_id(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     chat_id = update.message.chat_id
@@ -1772,7 +1745,6 @@ def main():
     # Comandos
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("setsaldo", set_saldo))
-    application.add_handler(CommandHandler("setgroupid", set_group_id))
     application.add_handler(CommandHandler("getchatid", get_chat_id))
     
     # Handlers
@@ -1784,14 +1756,23 @@ def main():
     logger.info(f"🔗 URL del webhook: {WEBHOOK_URL}/{TOKEN}")
     logger.info(f"🔌 Escuchando en puerto: {PORT}")
     
-    application.run_webhook(
-        listen="0.0.0.0",
-        port=PORT,
-        url_path=TOKEN,
-        webhook_url=f"{WEBHOOK_URL}/{TOKEN}",
-        cert=None,
-        drop_pending_updates=True
-    )
+    # Configuración de webhook mejorada
+    try:
+        application.run_webhook(
+            listen="0.0.0.0",
+            port=PORT,
+            url_path=TOKEN,
+            webhook_url=f"{WEBHOOK_URL}/{TOKEN}",
+            cert=None,
+            drop_pending_updates=True,
+            key="private.key",
+            cert_pem="cert.pem",
+            webhook_cert="public.pem"
+        )
+    except Exception as e:
+        logger.error(f"Error en webhook: {e}")
+        # Fallback a polling en caso de error
+        application.run_polling()
 
 if __name__ == "__main__":
     main()
