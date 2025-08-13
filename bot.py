@@ -10,7 +10,8 @@ from telegram.ext import (
     ContextTypes,
     MessageHandler,
     filters,
-    JobQueue
+    JobQueue,
+    CallbackContext
 )
 from supabase import create_client, Client
 
@@ -22,11 +23,11 @@ COINCAP_API_URL = "https://rest.coincap.io/v3"
 MAX_DAILY_CHECKS = 80
 MIN_DEPOSITO = 5000
 MIN_RIESGO = 5000
-MIN_RETIRO = 6500  # Mínimo para retiros
+MIN_RETIRO = 6500
 CUP_RATE = 440
-CONFIRMATION_NUMBER = "59190241"  # Número de confirmación
-CARD_NUMBER = "9227 0699 9532 8054"  # Tarjeta para depósitos
-GROUP_ID = "-1002077760198"  # ID del grupo CromwellTrading
+CONFIRMATION_NUMBER = "59190241"
+CARD_NUMBER = "9227 0699 9532 8054"
+GROUP_ID = os.getenv("GROUP_ID", "")  # Se configura dinámicamente
 
 # Mapeo de activos
 ASSETS = {
@@ -48,19 +49,19 @@ ASSETS = {
 
 # Valores de pip para cada activo
 PIP_VALUES = {
-    "bitcoin": 0.01,      # 1 pip = 0.01 USD
-    "ethereum": 0.01,     # 1 pip = 0.01 USD
+    "bitcoin": 0.01,
+    "ethereum": 0.01,
     "binance-coin": 0.01,
-    "tether": 0.0001,     # 1 pip = 0.0001 USD
+    "tether": 0.0001,
     "dai": 0.0001,
     "usd-coin": 0.0001,
     "ripple": 0.0001,
     "cardano": 0.0001,
     "solana": 0.01,
-    "dogecoin": 0.000001, # 1 pip = 0.000001 USD
+    "dogecoin": 0.000001,
     "polkadot": 0.01,
     "litecoin": 0.01,
-    "chainlink": 0.001,   # 1 pip = 0.001 USD
+    "chainlink": 0.001,
     "bitcoin-cash": 0.01
 }
 
@@ -81,22 +82,18 @@ APALANCAMIENTOS = [5, 10, 20, 50, 100]
 
 # Funciones de cálculo de pips
 def calcular_valor_pip(asset_id, cup_rate):
-    """Calcula el valor de 1 pip en CUP para un activo"""
     pip_value_usd = PIP_VALUES.get(asset_id, 0.01)
     return pip_value_usd * cup_rate
 
 def calcular_ganancia_pips(pips, asset_id, cup_rate, apalancamiento=1):
-    """Calcula la ganancia en CUP para un movimiento de pips con apalancamiento"""
     valor_pip = calcular_valor_pip(asset_id, cup_rate)
     return pips * valor_pip * apalancamiento
 
 def calcular_pips_movidos(precio_inicial, precio_final, asset_id):
-    """Calcula los pips movidos entre dos precios"""
     pip_value = PIP_VALUES.get(asset_id, 0.01)
     return abs(precio_final - precio_inicial) / pip_value
 
 def calcular_max_sl(monto_riesgo, asset_id, entry_price, operation_type, leverage, cup_rate):
-    """Calcula el precio MÍNIMO/MÁXIMO permitido para el SL basado en el monto de riesgo"""
     valor_pip = calcular_valor_pip(asset_id, cup_rate) * leverage
     max_pips = monto_riesgo / valor_pip
     
@@ -458,6 +455,12 @@ def get_operation_detail_keyboard(op_id, is_history=False):
 def get_welcome_keyboard():
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("🚀 Empezar a Operar", callback_data="start_trading")]
+    ])
+
+def get_navigation_keyboard():
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("🏠 Menú Principal", callback_data="back_main")],
+        [InlineKeyboardButton("💳 Ver Balance", callback_data="balance")]
     ])
 
 # Handlers
@@ -1216,7 +1219,10 @@ async def recibir_monto(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
             await update.message.reply_text(
                 "📤 Por favor, envía la captura de pantalla del comprobante de depósito.\n\n"
                 "⚠️ **Asegúrate de que el comprobante muestre claramente:**\n"
-                "- Monto transferido\n- Hora de la operación\n- ID de la transferencia"
+                "- Monto transferido\n- Hora de la operación\n- ID de la transferencia",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("❌ Cancelar", callback_data="balance")]
+                ])
             )
         else:  # retiro
             await update.message.reply_text(
@@ -1225,7 +1231,10 @@ async def recibir_monto(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
                 "Teléfono: [número de teléfono]\n\n"
                 "ℹ️ Ejemplo:\n"
                 "Tarjeta: 9200 1234 5678 9012\n"
-                "Teléfono: 55512345"
+                "Teléfono: 55512345",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("❌ Cancelar", callback_data="balance")]
+                ])
             )
     except ValueError:
         await update.message.reply_text("⚠️ Monto inválido. Por favor ingresa un número:")
@@ -1267,16 +1276,31 @@ async def recibir_datos(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
                 f"• Número confirmación: `{CONFIRMATION_NUMBER}`"
             )
             
-            # Enviar al grupo
-            await context.bot.send_photo(
-                chat_id=GROUP_ID,
-                photo=file_path,
-                caption=grupo_message,
-                parse_mode="Markdown",
-                reply_markup=keyboard
-            )
+            # Obtener ID de grupo dinámico
+            group_id = context.bot_data.get('group_id', GROUP_ID)
             
-            # Enviar al admin
+            # Enviar notificación
+            if group_id:
+                try:
+                    await context.bot.send_photo(
+                        chat_id=group_id,
+                        photo=file_path,
+                        caption=grupo_message,
+                        parse_mode="Markdown",
+                        reply_markup=keyboard
+                    )
+                except Exception as e:
+                    logger.error(f"Error enviando al grupo: {e}")
+                    # Notificar al admin si falla
+                    await context.bot.send_photo(
+                        chat_id=ADMIN_ID,
+                        photo=file_path,
+                        caption=f"{grupo_message}\n\n⚠️ Error enviando al grupo: {e}",
+                        parse_mode="Markdown",
+                        reply_markup=keyboard
+                    )
+            
+            # Siempre enviar al admin
             await context.bot.send_photo(
                 chat_id=ADMIN_ID,
                 photo=file_path,
@@ -1285,9 +1309,10 @@ async def recibir_datos(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
                 reply_markup=keyboard
             )
             
+            # Respuesta al usuario con botones
             await update.message.reply_text(
                 "✅ Solicitud de depósito enviada. Espera la confirmación del administrador.",
-                reply_markup=get_main_keyboard()
+                reply_markup=get_navigation_keyboard()
             )
         else:
             await update.message.reply_text("⚠️ Error al crear la solicitud. Intenta nuevamente.")
@@ -1310,19 +1335,32 @@ async def recibir_datos(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
                 f"• ID: `{user_id}`\n"
                 f"• Monto: `{monto:.2f} CUP`\n"
                 f"• ID Solicitud: `{solicitud_id}`\n"
-                f"• Datos:\n`{datos}`\n\n"
-                f"⚠️ Recuerda verificar límites de transferencia"
+                f"• Datos:\n`{datos}`"
             )
             
-            # Enviar al grupo
-            await context.bot.send_message(
-                chat_id=GROUP_ID,
-                text=grupo_message,
-                parse_mode="Markdown",
-                reply_markup=keyboard
-            )
+            # Obtener ID de grupo dinámico
+            group_id = context.bot_data.get('group_id', GROUP_ID)
             
-            # Enviar al admin
+            # Enviar notificación
+            if group_id:
+                try:
+                    await context.bot.send_message(
+                        chat_id=group_id,
+                        text=grupo_message,
+                        parse_mode="Markdown",
+                        reply_markup=keyboard
+                    )
+                except Exception as e:
+                    logger.error(f"Error enviando al grupo: {e}")
+                    # Notificar al admin si falla
+                    await context.bot.send_message(
+                        chat_id=ADMIN_ID,
+                        text=f"{grupo_message}\n\n⚠️ Error enviando al grupo: {e}",
+                        parse_mode="Markdown",
+                        reply_markup=keyboard
+                    )
+            
+            # Siempre enviar al admin
             await context.bot.send_message(
                 chat_id=ADMIN_ID,
                 text=grupo_message,
@@ -1330,9 +1368,10 @@ async def recibir_datos(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
                 reply_markup=keyboard
             )
             
+            # Respuesta al usuario con botones
             await update.message.reply_text(
                 "✅ Solicitud de retiro enviada. Espera la confirmación del administrador.",
-                reply_markup=get_main_keyboard()
+                reply_markup=get_navigation_keyboard()
             )
         else:
             await update.message.reply_text("⚠️ Error al crear la solicitud. Intenta nuevamente.")
@@ -1599,6 +1638,31 @@ async def set_saldo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     nuevo_saldo = actualizar_saldo(target_user_id, monto)
     await update.message.reply_text(f"✅ Saldo de {target_user_id} actualizado a {nuevo_saldo:.2f} CUP")
 
+# Comando para establecer ID de grupo
+async def set_group_id(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    user_id = str(update.message.from_user.id)
+    if user_id != ADMIN_ID:
+        await update.message.reply_text("⚠️ Solo el administrador puede usar este comando.")
+        return
+        
+    args = context.args
+    if not args:
+        await update.message.reply_text("Uso: /setgroupid [id_grupo]")
+        return
+        
+    try:
+        group_id = args[0]
+        context.bot_data['group_id'] = group_id
+        await update.message.reply_text(f"✅ ID de grupo configurado a: {group_id}")
+    except Exception as e:
+        logger.error(f"Error setting group ID: {e}")
+        await update.message.reply_text("⚠️ Error al configurar el ID del grupo.")
+
+# Comando para obtener ID de chat
+async def get_chat_id(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    chat_id = update.message.chat_id
+    await update.message.reply_text(f"El ID de este chat es: `{chat_id}`", parse_mode="Markdown")
+
 # Función para procesar selección de apalancamiento
 async def process_leverage_selection(query, context, asset_id, currency, operation_type, leverage):
     asset = ASSETS[asset_id]
@@ -1705,11 +1769,14 @@ def main():
     # Configurar keep-alive
     application.job_queue.run_repeating(keep_alive, interval=300, first=10)
     
+    # Comandos
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("setsaldo", set_saldo))
-    application.add_handler(CallbackQueryHandler(button_click))
+    application.add_handler(CommandHandler("setgroupid", set_group_id))
+    application.add_handler(CommandHandler("getchatid", get_chat_id))
     
-    # Handlers para mensajes
+    # Handlers
+    application.add_handler(CallbackQueryHandler(button_click))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_messages))
     application.add_handler(MessageHandler(filters.PHOTO, handle_photo))
     
