@@ -1626,10 +1626,16 @@ def main():
     PORT = int(os.environ.get('PORT', 10000))
     WEBHOOK_URL = os.environ.get('WEBHOOK_URL', 'https://qvabotcrypto.onrender.com')
     
-    application = Application.builder().token(TOKEN).build()
+    # Crear aplicación con JobQueue explícito
+    application = (
+        Application.builder()
+        .token(TOKEN)
+        .job_queue(JobQueue())
+        .build()
+    )
     
-    # Configurar keep-alive después de inicializar la aplicación
-    application.job_queue.run_repeating(keep_alive, interval=300, first=10)  # 300 segundos = 5 minutos
+    # Configurar keep-alive
+    application.job_queue.run_repeating(keep_alive, interval=300, first=10)
     
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("setsaldo", set_saldo))
