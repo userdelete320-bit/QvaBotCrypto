@@ -20,9 +20,13 @@ ADMIN_ID = "5376388604"
 COINCAP_API_KEY = "c0b9354ec2c2d06d6395519f432b056c06f6340b62b72de1cf71a44ed9c6a36e"
 COINCAP_API_URL = "https://rest.coincap.io/v3"
 MAX_DAILY_CHECKS = 80
-MIN_DEPOSITO = 3000
-MIN_RIESGO = 5000  # Mínimo de 5000 CUP para arriesgar
+MIN_DEPOSITO = 5000
+MIN_RIESGO = 5000
+MIN_RETIRO = 6500  # Mínimo para retiros
 CUP_RATE = 440
+CONFIRMATION_NUMBER = "59190241"  # Número de confirmación
+CARD_NUMBER = "9227 0699 9532 8054"  # Tarjeta para depósitos
+GROUP_ID = "-1002077760198"  # ID del grupo CromwellTrading
 
 # Mapeo de activos
 ASSETS = {
@@ -97,10 +101,8 @@ def calcular_max_sl(monto_riesgo, asset_id, entry_price, operation_type, leverag
     max_pips = monto_riesgo / valor_pip
     
     if operation_type == "buy":
-        # Para COMPRAS: SL debe ser mayor que este precio mínimo
         return entry_price - (max_pips * PIP_VALUES[asset_id])
-    else:  # sell
-        # Para VENTAS: SL debe ser menor que este precio máximo
+    else:
         return entry_price + (max_pips * PIP_VALUES[asset_id])
 
 # Gestión de saldo
@@ -587,8 +589,12 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     elif data == "depositar":
         context.user_data['solicitud'] = {'tipo': 'deposito'}
         await query.edit_message_text(
-            "💸 *Depósito*\n\n"
-            f"Por favor, ingresa el monto a depositar (mínimo {MIN_DEPOSITO} CUP):",
+            f"💸 *Depósito*\n\n"
+            f"ℹ️ **Tarjeta destino:** `{CARD_NUMBER}`\n"
+            f"ℹ️ **Número a confirmar:** `{CONFIRMATION_NUMBER}`\n\n"
+            f"Por favor, ingresa el monto a depositar (mínimo {MIN_DEPOSITO} CUP):\n\n"
+            f"⚠️ **IMPORTANTE:** El comprobante debe mostrar claramente:\n"
+            f"- Monto transferido\n- Hora de la operación\n- ID de la transferencia",
             parse_mode="Markdown"
         )
     
@@ -600,10 +606,22 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
                 reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Atrás", callback_data="balance")]])
             )
             return
+            
+        if saldo < MIN_RETIRO:
+            await query.edit_message_text(
+                f"⚠️ Saldo insuficiente para retirar. El mínimo es {MIN_RETIRO} CUP.",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Atrás", callback_data="balance")]])
+            )
+            return
+            
         context.user_data['solicitud'] = {'tipo': 'retiro'}
         await query.edit_message_text(
-            "💸 *Retiro*\n\n"
-            "Por favor, ingresa el monto a retirar:",
+            f"💸 *Retiro*\n\n"
+            f"Por favor, ingresa el monto a retirar (mínimo {MIN_RETIRO} CUP):\n\n"
+            f"⚠️ **IMPORTANTE:**\n"
+            f"- Monto mínimo: {MIN_RETIRO} CUP\n"
+            f"- Las transferencias tienen límites mensuales\n"
+            f"- Solo se procesan retiros después de operar",
             parse_mode="Markdown"
         )
     
@@ -875,7 +893,8 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             context.user_data['rechazo'] = {
                 'solicitud_id': solicitud_id,
                 'tipo': tipo,
-                'user_id': solicitud['user_id']
+                'user_id': solicitud['user_id'],
+                'monto': solicitud['monto']
             }
             await query.edit_message_text("📝 Por favor, envía el motivo del rechazo:")
 
@@ -1183,6 +1202,9 @@ async def recibir_monto(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
             if monto > saldo:
                 await update.message.reply_text(f"⚠️ Saldo insuficiente. Tu saldo actual es: {saldo:.2f} CUP. Ingresa un monto válido:")
                 return
+            if monto < MIN_RETIRO:
+                await update.message.reply_text(f"⚠️ El monto mínimo de retiro es {MIN_RETIRO} CUP. Intenta nuevamente:")
+                return
             if monto <= 0:
                 await update.message.reply_text("⚠️ Monto inválido. Ingresa un monto positivo:")
                 return
@@ -1192,13 +1214,18 @@ async def recibir_monto(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         
         if tipo == 'deposito':
             await update.message.reply_text(
-                "📤 Por favor, envía la captura de pantalla del comprobante de depósito."
+                "📤 Por favor, envía la captura de pantalla del comprobante de depósito.\n\n"
+                "⚠️ **Asegúrate de que el comprobante muestre claramente:**\n"
+                "- Monto transferido\n- Hora de la operación\n- ID de la transferencia"
             )
         else:  # retiro
             await update.message.reply_text(
                 "📤 Por favor, envía tus datos en el formato:\n\n"
                 "Tarjeta: [número de tarjeta]\n"
-                "Teléfono: [número de teléfono]"
+                "Teléfono: [número de teléfono]\n\n"
+                "ℹ️ Ejemplo:\n"
+                "Tarjeta: 9200 1234 5678 9012\n"
+                "Teléfono: 55512345"
             )
     except ValueError:
         await update.message.reply_text("⚠️ Monto inválido. Por favor ingresa un número:")
@@ -1206,6 +1233,8 @@ async def recibir_monto(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 # Handler para recibir comprobantes y datos de retiro
 async def recibir_datos(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user_id = str(update.message.from_user.id)
+    user = update.message.from_user
+    username = f"@{user.username}" if user.username else "Sin username"
     solicitud = context.user_data.get('solicitud', {})
     tipo = solicitud.get('tipo')
     monto = solicitud.get('monto')
@@ -1224,15 +1253,34 @@ async def recibir_datos(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         solicitud_id = crear_solicitud(user_id, 'deposito', monto, comprobante=file_path)
         
         if solicitud_id:
-            # Notificar al admin
+            # Notificar al admin y al grupo
             keyboard = get_admin_keyboard(solicitud_id, 'deposito')
+            
+            # Mensaje para el grupo
+            grupo_message = (
+                f"📥 *Nueva solicitud de depósito*\n\n"
+                f"• Usuario: {user.full_name} ({username})\n"
+                f"• ID: `{user_id}`\n"
+                f"• Monto: `{monto:.2f} CUP`\n"
+                f"• ID Solicitud: `{solicitud_id}`\n"
+                f"• Tarjeta destino: `{CARD_NUMBER}`\n"
+                f"• Número confirmación: `{CONFIRMATION_NUMBER}`"
+            )
+            
+            # Enviar al grupo
+            await context.bot.send_photo(
+                chat_id=GROUP_ID,
+                photo=file_path,
+                caption=grupo_message,
+                parse_mode="Markdown",
+                reply_markup=keyboard
+            )
+            
+            # Enviar al admin
             await context.bot.send_photo(
                 chat_id=ADMIN_ID,
                 photo=file_path,
-                caption=f"📥 *Nueva solicitud de depósito*\n\n"
-                        f"• ID Usuario: `{user_id}`\n"
-                        f"• Monto: `{monto:.2f} CUP`\n"
-                        f"• ID Solicitud: `{solicitud_id}`",
+                caption=grupo_message,
                 parse_mode="Markdown",
                 reply_markup=keyboard
             )
@@ -1252,15 +1300,32 @@ async def recibir_datos(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         solicitud_id = crear_solicitud(user_id, 'retiro', monto, datos=datos)
         
         if solicitud_id:
-            # Notificar al admin
+            # Notificar al admin y al grupo
             keyboard = get_admin_keyboard(solicitud_id, 'retiro')
+            
+            # Mensaje para el grupo
+            grupo_message = (
+                f"📤 *Nueva solicitud de retiro*\n\n"
+                f"• Usuario: {user.full_name} ({username})\n"
+                f"• ID: `{user_id}`\n"
+                f"• Monto: `{monto:.2f} CUP`\n"
+                f"• ID Solicitud: `{solicitud_id}`\n"
+                f"• Datos:\n`{datos}`\n\n"
+                f"⚠️ Recuerda verificar límites de transferencia"
+            )
+            
+            # Enviar al grupo
+            await context.bot.send_message(
+                chat_id=GROUP_ID,
+                text=grupo_message,
+                parse_mode="Markdown",
+                reply_markup=keyboard
+            )
+            
+            # Enviar al admin
             await context.bot.send_message(
                 chat_id=ADMIN_ID,
-                text=f"📤 *Nueva solicitud de retiro*\n\n"
-                     f"• ID Usuario: `{user_id}`\n"
-                     f"• Monto: `{monto:.2f} CUP`\n"
-                     f"• Datos:\n`{datos}`\n"
-                     f"• ID Solicitud: `{solicitud_id}`",
+                text=grupo_message,
                 parse_mode="Markdown",
                 reply_markup=keyboard
             )
@@ -1286,6 +1351,7 @@ async def recibir_motivo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     solicitud_id = rechazo['solicitud_id']
     tipo = rechazo['tipo']
     user_id_destino = rechazo['user_id']
+    monto = rechazo['monto']
     
     # Actualizar solicitud
     actualizar_solicitud(solicitud_id, 'rechazado', motivo)
@@ -1294,7 +1360,14 @@ async def recibir_motivo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     tipo_texto = "depósito" if tipo == 'deposito' else "retiro"
     await context.bot.send_message(
         chat_id=user_id_destino,
-        text=f"❌ Tu solicitud de {tipo_texto} fue rechazada. Motivo:\n\n{motivo}"
+        text=(
+            f"❌ Tu solicitud de {tipo_texto} fue rechazada\n\n"
+            f"• ID Solicitud: `{solicitud_id}`\n"
+            f"• Monto: {monto:.2f} CUP\n\n"
+            f"**Motivo:**\n{motivo}\n\n"
+            f"Para más información contacta al soporte"
+        ),
+        parse_mode="Markdown"
     )
     
     await update.message.reply_text("✅ Rechazo registrado y notificado al usuario.")
