@@ -20,6 +20,7 @@ COINCAP_API_KEY = "c0b9354ec2c2d06d6395519f432b056c06f6340b62b72de1cf71a44ed9c6a
 COINCAP_API_URL = "https://rest.coincap.io/v3"
 MAX_DAILY_CHECKS = 80
 MIN_DEPOSITO = 3000
+MIN_RIESGO = 5000  # Mínimo de 5000 CUP para arriesgar
 CUP_RATE = 440
 
 # Mapeo de activos CORREGIDO (emoji key fix)
@@ -29,15 +30,33 @@ ASSETS = {
     "binance-coin": {"symbol": "BNB", "name": "Binance Coin", "coincap_id": "binance-coin", "emoji": "🅱️"},
     "tether": {"symbol": "USDT", "name": "Tether", "coincap_id": "tether", "emoji": "💵"},
     "dai": {"symbol": "DAI", "name": "Dai", "coincap_id": "dai", "emoji": "🌀"},
-    "usd-coin": {"symbol": "USDC", "name": "USD Coin", "coincap_id": "usd-coin", "emoji": "💲"},  # Fixed
+    "usd-coin": {"symbol": "USDC", "name": "USD Coin", "coincap_id": "usd-coin", "emoji": "💲"},
     "ripple": {"symbol": "XRP", "name": "XRP", "coincap_id": "ripple", "emoji": "✖️"},
-    "cardano": {"symbol": "ADA", "name": "Cardano", "coincap_id": "cardano", "emoji": "🅰️"},  # Fixed
+    "cardano": {"symbol": "ADA", "name": "Cardano", "coincap_id": "cardano", "emoji": "🅰️"},
     "solana": {"symbol": "SOL", "name": "Solana", "coincap_id": "solana", "emoji": "☀️"},
     "dogecoin": {"symbol": "DOGE", "name": "Dogecoin", "coincap_id": "dogecoin", "emoji": "🐶"},
     "polkadot": {"symbol": "DOT", "name": "Polkadot", "coincap_id": "polkadot", "emoji": "🔴"},
     "litecoin": {"symbol": "LTC", "name": "Litecoin", "coincap_id": "litecoin", "emoji": "🔶"},
     "chainlink": {"symbol": "LINK", "name": "Chainlink", "coincap_id": "chainlink", "emoji": "🔗"},
     "bitcoin-cash": {"symbol": "BCH", "name": "Bitcoin Cash", "coincap_id": "bitcoin-cash", "emoji": "💰"}
+}
+
+# Valores de pip para cada activo
+PIP_VALUES = {
+    "bitcoin": 0.01,      # 1 pip = 0.01 USD
+    "ethereum": 0.01,     # 1 pip = 0.01 USD
+    "binance-coin": 0.01,
+    "tether": 0.0001,     # 1 pip = 0.0001 USD
+    "dai": 0.0001,
+    "usd-coin": 0.0001,
+    "ripple": 0.0001,
+    "cardano": 0.0001,
+    "solana": 0.01,
+    "dogecoin": 0.000001, # 1 pip = 0.000001 USD
+    "polkadot": 0.01,
+    "litecoin": 0.01,
+    "chainlink": 0.001,   # 1 pip = 0.001 USD
+    "bitcoin-cash": 0.01
 }
 
 # Configurar Supabase
@@ -52,21 +71,23 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# Niveles de apalancamiento
+APALANCAMIENTOS = [5, 10, 20, 50, 100]
+
 # Funciones de cálculo de pips
 def calcular_valor_pip(asset_id, cup_rate):
-    PIP_VALUES = {
-        "bitcoin": 0.01, "ethereum": 0.01, "binance-coin": 0.01, "tether": 0.0001, 
-        "dai": 0.0001, "usd-coin": 0.0001, "ripple": 0.0001, "cardano": 0.0001,
-        "solana": 0.01, "dogecoin": 0.000001, "polkadot": 0.01, "litecoin": 0.01,
-        "chainlink": 0.001, "bitcoin-cash": 0.01
-    }
-    return PIP_VALUES.get(asset_id, 0.01) * cup_rate
+    """Calcula el valor de 1 pip en CUP para un activo"""
+    pip_value_usd = PIP_VALUES.get(asset_id, 0.01)
+    return pip_value_usd * cup_rate
 
 def calcular_ganancia_pips(pips, asset_id, cup_rate, apalancamiento=1):
-    return pips * calcular_valor_pip(asset_id, cup_rate) * apalancamiento
+    """Calcula la ganancia en CUP para un movimiento de pips con apalancamiento"""
+    valor_pip = calcular_valor_pip(asset_id, cup_rate)
+    return pips * valor_pip * apalancamiento
 
 def calcular_pips_movidos(precio_inicial, precio_final, asset_id):
-    pip_value = calcular_valor_pip(asset_id, 1)
+    """Calcula los pips movidos entre dos precios"""
+    pip_value = PIP_VALUES.get(asset_id, 0.01)
     return abs(precio_final - precio_inicial) / pip_value
 
 # Gestión de saldo
@@ -320,10 +341,24 @@ def get_trade_keyboard(asset_id, currency):
         [InlineKeyboardButton("🔙 Atrás", callback_data=f"back_asset_{asset_id}")]
     ])
 
+def get_apalancamiento_keyboard(asset_id, currency, operation_type):
+    buttons = []
+    row = []
+    for leverage in APALANCAMIENTOS:
+        row.append(InlineKeyboardButton(f"x{leverage}", callback_data=f"lev_{asset_id}_{currency}_{operation_type}_{leverage}"))
+        if len(row) == 3:
+            buttons.append(row)
+            row = []
+    if row:
+        buttons.append(row)
+    buttons.append([InlineKeyboardButton("✏️ Personalizado", callback_data=f"lev_custom_{asset_id}_{currency}_{operation_type}")])
+    buttons.append([InlineKeyboardButton("🔙 Atrás", callback_data=f"back_trade_{asset_id}_{currency}_{operation_type}")])
+    return InlineKeyboardMarkup(buttons)
+
 def get_operations_keyboard(user_id):
     try:
         response = supabase.table('operations').select(
-            "id, asset, currency, operation_type, entry_price"
+            "id, asset, currency, operation_type, entry_price, apalancamiento"
         ).eq("user_id", user_id).eq("status", "pendiente").execute()
         operations = response.data
     except Exception as e:
@@ -337,8 +372,9 @@ def get_operations_keyboard(user_id):
         currency = op['currency']
         op_type = op['operation_type']
         price = op['entry_price']
+        leverage = op.get('apalancamiento', 1)
         asset = ASSETS[asset_id]
-        btn_text = f"{asset['emoji']} {asset['symbol']} {'🟢' if op_type == 'buy' else '🔴'} {price:.2f} {currency}"
+        btn_text = f"{asset['emoji']} {asset['symbol']} {'🟢' if op_type == 'buy' else '🔴'} {price:.2f} {currency} x{leverage}"
         buttons.append([InlineKeyboardButton(btn_text, callback_data=f"view_op_{op_id}")])
     
     buttons.append([
@@ -350,7 +386,7 @@ def get_operations_keyboard(user_id):
 def get_history_keyboard(user_id):
     try:
         response = supabase.table('operations').select(
-            "id, asset, currency, operation_type, entry_price, result"
+            "id, asset, currency, operation_type, entry_price, result, apalancamiento"
         ).eq("user_id", user_id).eq("status", "cerrada").order("entry_time", desc=True).limit(10).execute()
         operations = response.data
     except Exception as e:
@@ -365,6 +401,7 @@ def get_history_keyboard(user_id):
         op_type = op['operation_type']
         price = op['entry_price']
         result = op.get('result', '')
+        leverage = op.get('apalancamiento', 1)
         asset = ASSETS[asset_id]
         
         # Determinar emoji según resultado
@@ -375,7 +412,7 @@ def get_history_keyboard(user_id):
         else:
             result_emoji = "🟣"  # Cerrada manualmente
         
-        btn_text = f"{result_emoji} {asset['emoji']} {asset['symbol']} {'🟢' if op_type == 'buy' else '🔴'} {price:.2f} {currency}"
+        btn_text = f"{result_emoji} {asset['emoji']} {asset['symbol']} {'🟢' if op_type == 'buy' else '🔴'} {price:.2f} {currency} x{leverage}"
         buttons.append([InlineKeyboardButton(btn_text, callback_data=f"view_hist_{op_id}")])
     
     buttons.append([
@@ -485,53 +522,33 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     elif data.startswith("trade_"):
         _, asset_id, currency, operation_type = data.split('_')
         asset = ASSETS[asset_id]
-        price = get_current_price(asset_id, currency)
-        
-        if price is None:
-            await query.edit_message_text("⚠️ Error al obtener precio. Intenta nuevamente.")
-            return
-        
-        try:
-            operation_data = {
-                "user_id": user_id,
-                "asset": asset_id,
-                "currency": currency,
-                "operation_type": operation_type,
-                "entry_price": price,
-                "entry_time": datetime.now(timezone.utc).isoformat(),
-                "status": "pendiente"
-            }
-            response = supabase.table('operations').insert(operation_data).execute()
-            if response.data:
-                op_id = response.data[0]['id']
-                context.user_data['pending_operation'] = {
-                    'id': op_id,
-                    'asset_id': asset_id,
-                    'currency': currency,
-                    'operation_type': operation_type,
-                    'entry_price': price
-                }
-            else:
-                raise Exception("No data in response")
-        except Exception as e:
-            logger.error(f"Error saving operation: {e}")
-            await query.edit_message_text("⚠️ Error al guardar la operación. Intenta nuevamente.")
-            return
         
         await query.edit_message_text(
-            f"✅ *Operación registrada exitosamente!*\n\n"
-            f"• Activo: {asset['emoji']} {asset['name']} ({asset['symbol']})\n"
-            f"• Tipo: {'🟢 COMPRA' if operation_type == 'buy' else '🔴 VENTA'}\n"
-            f"• Precio: {price:.2f} {currency}\n\n"
-            f"Ahora, por favor establece el Stop Loss (SL) y Take Profit (TP).\n\n"
-            f"Envía el mensaje en el formato:\n"
-            f"SL [precio]\n"
-            f"TP [precio]\n\n"
-            f"Ejemplo:\n"
-            f"SL {price*0.95:.2f}\n"
-            f"TP {price*1.05:.2f}",
-            parse_mode="Markdown"
+            f"🔰 *Selecciona el nivel de apalancamiento* 🔰\n"
+            f"Para {asset['emoji']} {asset['name']} ({asset['symbol']})\n\n"
+            f"El apalancamiento multiplica tus ganancias PERO también tus pérdidas. "
+            f"Selecciona con cuidado:",
+            parse_mode="Markdown",
+            reply_markup=get_apalancamiento_keyboard(asset_id, currency, operation_type)
         )
+    
+    elif data.startswith("lev_"):
+        if data.startswith("lev_custom_"):
+            _, _, asset_id, currency, operation_type = data.split('_')
+            context.user_data['pending_leverage'] = {
+                'asset_id': asset_id,
+                'currency': currency,
+                'operation_type': operation_type
+            }
+            await query.edit_message_text(
+                "✏️ *Apalancamiento Personalizado*\n\n"
+                "Ingresa el nivel de apalancamiento deseado (entre 1 y 100):"
+            )
+            return
+        
+        _, asset_id, currency, operation_type, leverage = data.split('_')
+        leverage = int(leverage)
+        await process_leverage_selection(query, context, asset_id, currency, operation_type, leverage)
     
     elif data == "operations":
         await query.edit_message_text(
@@ -600,6 +617,7 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         currency = op_data['currency']
         op_type = op_data['operation_type']
         price = op_data['entry_price']
+        leverage = op_data.get('apalancamiento', 1)
         entry_time = datetime.fromisoformat(op_data['entry_time']).strftime("%Y-%m-%d %H:%M:%S")
         asset = ASSETS[asset_id]
         
@@ -636,6 +654,7 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             f"*Detalle de Operación* #{op_id}\n\n"
             f"• Activo: {asset['emoji']} {asset['name']} ({asset['symbol']})\n"
             f"• Tipo: {'🟢 COMPRA' if op_type == 'buy' else '🔴 VENTA'}\n"
+            f"• Apalancamiento: x{leverage}\n"
             f"• Precio entrada: {price:.4f} {currency}\n"
             f"• Hora entrada: {entry_time}\n"
             f"• {sl_info}\n"
@@ -682,7 +701,8 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             # Calcular pips movidos
             pips_movidos = calcular_pips_movidos(op_data['entry_price'], current_price, asset_id)
             # Calcular ganancia/pérdida en CUP
-            cambio_cup = calcular_ganancia_pips(pips_movidos, asset_id, CUP_RATE)
+            apalancamiento = op_data.get('apalancamiento', 1)
+            cambio_cup = calcular_ganancia_pips(pips_movidos, asset_id, CUP_RATE, apalancamiento)
             # Para ventas, la dirección es inversa
             if op_data['operation_type'] == "sell":
                 cambio_cup = -cambio_cup
@@ -702,6 +722,7 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
                 f"✅ *Operación #{op_id} cerrada exitosamente!*\n"
                 f"• Precio de cierre: {current_price:.4f} {currency}\n"
                 f"• Pips movidos: {pips_movidos:.1f}\n"
+                f"• Apalancamiento: x{apalancamiento}\n"
                 f"• {'Ganancia' if cambio_cup >= 0 else 'Pérdida'}: {abs(cambio_cup):.2f} CUP",
                 parse_mode="Markdown",
                 reply_markup=get_main_keyboard()
@@ -882,6 +903,7 @@ async def set_sl_tp(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     currency = op_data['currency']
     operation_type = op_data['operation_type']
     entry_price = op_data['entry_price']
+    leverage = op_data.get('apalancamiento', 1)
     asset = ASSETS[asset_id]
     
     lines = text.split('\n')
@@ -928,16 +950,17 @@ async def set_sl_tp(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         pips_to_sl = calcular_pips_movidos(entry_price, sl_price, asset_id)
         pips_to_tp = calcular_pips_movidos(entry_price, tp_price, asset_id)
         
-        # Calcular valores en CUP
-        sl_cup = calcular_ganancia_pips(pips_to_sl, asset_id, CUP_RATE)
-        tp_cup = calcular_ganancia_pips(pips_to_tp, asset_id, CUP_RATE)
+        # Calcular valores en CUP con apalancamiento
+        sl_cup = calcular_ganancia_pips(pips_to_sl, asset_id, CUP_RATE, leverage)
+        tp_cup = calcular_ganancia_pips(pips_to_tp, asset_id, CUP_RATE, leverage)
         
         await update.message.reply_text(
             f"✅ *Stop Loss y Take Profit configurados!*\n\n"
             f"• Activo: {asset['emoji']} {asset['name']} ({asset['symbol']})\n"
+            f"• Apalancamiento: x{leverage}\n"
             f"• 🛑 Stop Loss: {sl_price:.4f} {currency} ({pips_to_sl:.1f} pips = {sl_cup:.2f} CUP)\n"
             f"• 🎯 Take Profit: {tp_price:.4f} {currency} ({pips_to_tp:.1f} pips = {tp_cup:.2f} CUP)\n\n"
-            f"Ahora, por favor ingresa el monto que deseas arriesgar en CUP:",
+            f"Ahora, por favor ingresa el monto que deseas arriesgar en CUP (mínimo {MIN_RIESGO} CUP):",
             parse_mode="Markdown"
         )
     except Exception as e:
@@ -954,8 +977,14 @@ async def recibir_monto_riesgo(update: Update, context: ContextTypes.DEFAULT_TYP
     
     try:
         monto_riesgo = float(text)
-        if monto_riesgo <= 0:
-            await update.message.reply_text("⚠️ Monto inválido. Por favor ingresa un número positivo:")
+        if monto_riesgo < MIN_RIESGO:
+            await update.message.reply_text(f"⚠️ El monto mínimo a arriesgar es {MIN_RIESGO} CUP. Por favor ingresa un monto válido:")
+            return
+            
+        # Verificar saldo
+        saldo_actual = obtener_saldo(user_id)
+        if monto_riesgo > saldo_actual:
+            await update.message.reply_text(f"⚠️ Saldo insuficiente. Tu saldo actual es: {saldo_actual:.2f} CUP. Ingresa un monto menor:")
             return
     except ValueError:
         await update.message.reply_text("⚠️ Monto inválido. Por favor ingresa un número:")
@@ -973,8 +1002,8 @@ async def recibir_monto_riesgo(update: Update, context: ContextTypes.DEFAULT_TYP
         # Guardar en contexto para uso posterior
         context.user_data['pending_operation']['monto_riesgo'] = monto_riesgo
         
-        # Calcular valor de pip en CUP
-        valor_pip_cup = calcular_valor_pip(op_data['asset_id'], CUP_RATE)
+        # Calcular valor de pip en CUP (con apalancamiento)
+        valor_pip_cup = calcular_valor_pip(op_data['asset_id'], CUP_RATE) * op_data.get('apalancamiento', 1)
         
         await update.message.reply_text(
             f"✅ *Monto de riesgo configurado!*\n\n"
@@ -1128,6 +1157,85 @@ async def recibir_motivo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     await update.message.reply_text("✅ Rechazo registrado y notificado al usuario.")
     del context.user_data['rechazo']
 
+# Handler para recibir apalancamiento personalizado
+async def recibir_apalancamiento(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    user_id = str(update.message.from_user.id)
+    text = update.message.text.strip()
+    
+    if 'pending_leverage' not in context.user_data:
+        return
+    
+    leverage_data = context.user_data['pending_leverage']
+    
+    try:
+        leverage = int(text)
+        if leverage < 1 or leverage > 100:
+            await update.message.reply_text("⚠️ Apalancamiento inválido. Debe estar entre 1 y 100. Intenta nuevamente:")
+            return
+    except ValueError:
+        await update.message.reply_text("⚠️ Valor inválido. Ingresa un número entre 1 y 100:")
+        return
+    
+    # Procesar la selección de apalancamiento
+    asset_id = leverage_data['asset_id']
+    currency = leverage_data['currency']
+    operation_type = leverage_data['operation_type']
+    
+    # Obtener el precio actual
+    price = get_current_price(asset_id, currency)
+    if price is None:
+        await update.message.reply_text("⚠️ Error al obtener precio. Intenta nuevamente.")
+        return
+    
+    # Calcular valor del pip con apalancamiento
+    valor_pip_cup = calcular_valor_pip(asset_id, CUP_RATE) * leverage
+    
+    try:
+        operation_data = {
+            "user_id": user_id,
+            "asset": asset_id,
+            "currency": currency,
+            "operation_type": operation_type,
+            "entry_price": price,
+            "apalancamiento": leverage,
+            "entry_time": datetime.now(timezone.utc).isoformat(),
+            "status": "pendiente"
+        }
+        response = supabase.table('operations').insert(operation_data).execute()
+        if response.data:
+            op_id = response.data[0]['id']
+            context.user_data['pending_operation'] = {
+                'id': op_id,
+                'asset_id': asset_id,
+                'currency': currency,
+                'operation_type': operation_type,
+                'entry_price': price,
+                'apalancamiento': leverage
+            }
+        else:
+            raise Exception("No data in response")
+    except Exception as e:
+        logger.error(f"Error saving operation: {e}")
+        await update.message.reply_text("⚠️ Error al guardar la operación. Intenta nuevamente.")
+        return
+    
+    await update.message.reply_text(
+        f"✅ *Operación registrada con apalancamiento x{leverage}!*\n\n"
+        f"• Activo: {ASSETS[asset_id]['emoji']} {ASSETS[asset_id]['name']} ({ASSETS[asset_id]['symbol']})\n"
+        f"• Tipo: {'🟢 COMPRA' if operation_type == 'buy' else '🔴 VENTA'}\n"
+        f"• Precio: {price:.2f} {currency}\n"
+        f"• Valor de 1 pip: {valor_pip_cup:.2f} CUP\n\n"
+        f"Ahora establece el Stop Loss (SL) y Take Profit (TP):\n\n"
+        f"Envía el mensaje en el formato:\n"
+        f"SL [precio]\n"
+        f"TP [precio]\n\n"
+        f"Ejemplo:\n"
+        f"SL {price*0.95:.2f}\n"
+        f"TP {price*1.05:.2f}",
+        parse_mode="Markdown"
+    )
+    del context.user_data['pending_leverage']
+
 # Función para comprobar operación
 async def check_operation(update: Update, context: ContextTypes.DEFAULT_TYPE, op_id: int):
     query = update.callback_query
@@ -1172,6 +1280,7 @@ async def check_operation(update: Update, context: ContextTypes.DEFAULT_TYPE, op
     operation_type = op_data['operation_type']
     sl_price = op_data['stop_loss']
     tp_price = op_data['take_profit']
+    apalancamiento = op_data.get('apalancamiento', 1)
     current_touch = None
     
     if operation_type == "buy":
@@ -1205,8 +1314,8 @@ async def check_operation(update: Update, context: ContextTypes.DEFAULT_TYPE, op
     
     # Calcular pips movidos
     pips_movidos = calcular_pips_movidos(entry_price, current_price, op_data['asset'])
-    # Calcular ganancia/pérdida en CUP
-    cambio_cup = calcular_ganancia_pips(pips_movidos, op_data['asset'], CUP_RATE)
+    # Calcular ganancia/pérdida en CUP con apalancamiento
+    cambio_cup = calcular_ganancia_pips(pips_movidos, op_data['asset'], CUP_RATE, apalancamiento)
     if operation_type == "sell":
         cambio_cup = -cambio_cup
     
@@ -1241,7 +1350,7 @@ async def check_operation(update: Update, context: ContextTypes.DEFAULT_TYPE, op
     if result == "SL":
         # Calcular pérdida
         pips_result = pips_to_sl
-        perdida_cup = calcular_ganancia_pips(pips_result, op_data['asset'], CUP_RATE)
+        perdida_cup = calcular_ganancia_pips(pips_result, op_data['asset'], CUP_RATE, apalancamiento)
         if operation_type == "sell":
             perdida_cup = -perdida_cup
         
@@ -1261,6 +1370,7 @@ async def check_operation(update: Update, context: ContextTypes.DEFAULT_TYPE, op
             f"⚠️ *STOP LOSS ACTIVADO* ⚠️\n\n"
             f"• Operación #{op_id} ({asset_info['emoji']} {symbol})\n"
             f"• Tipo: {'COMPRA' if operation_type == 'buy' else 'VENTA'}\n"
+            f"• Apalancamiento: x{apalancamiento}\n"
             f"• Precio entrada: {entry_price:.4f}\n"
             f"• Precio salida: {exit_price:.4f}\n"
             f"• Pips movidos: {pips_result:.1f}\n"
@@ -1271,7 +1381,7 @@ async def check_operation(update: Update, context: ContextTypes.DEFAULT_TYPE, op
     elif result == "TP":
         # Calcular ganancia
         pips_result = pips_to_tp
-        ganancia_cup = calcular_ganancia_pips(pips_result, op_data['asset'], CUP_RATE) * 0.8  # 80% de ganancia
+        ganancia_cup = calcular_ganancia_pips(pips_result, op_data['asset'], CUP_RATE, apalancamiento)
         if operation_type == "sell":
             ganancia_cup = -ganancia_cup
         
@@ -1291,6 +1401,7 @@ async def check_operation(update: Update, context: ContextTypes.DEFAULT_TYPE, op
             f"🎯 *TAKE PROFIT ACTIVADO* 🎯\n\n"
             f"• Operación #{op_id} ({asset_info['emoji']} {symbol})\n"
             f"• Tipo: {'COMPRA' if operation_type == 'buy' else 'VENTA'}\n"
+            f"• Apalancamiento: x{apalancamiento}\n"
             f"• Precio entrada: {entry_price:.4f}\n"
             f"• Precio salida: {exit_price:.4f}\n"
             f"• Pips movidos: {pips_result:.1f}\n"
@@ -1311,6 +1422,7 @@ async def check_operation(update: Update, context: ContextTypes.DEFAULT_TYPE, op
             f"📊 *Estado Actual de la Operación* #{op_id}\n\n"
             f"• Activo: {asset_info['emoji']} {symbol}\n"
             f"• Tipo: {'VENTA' if operation_type == 'sell' else 'COMPRA'}\n"
+            f"• Apalancamiento: x{apalancamiento}\n"
             f"• Precio entrada: {entry_price:.4f} {currency}\n"
             f"• 💰 Precio actual: {current_price:.4f} {currency} {trend_emoji}\n"
             f"• Pips movidos: {pips_movidos:.1f}\n"
@@ -1327,7 +1439,85 @@ async def check_operation(update: Update, context: ContextTypes.DEFAULT_TYPE, op
         message + credit_info,
         parse_mode="Markdown",
         reply_markup=get_operation_detail_keyboard(op_id, False))
+
+# Comando para establecer saldo (solo admin)
+async def set_saldo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    user_id = str(update.message.from_user.id)
+    if user_id != ADMIN_ID:
+        await update.message.reply_text("⚠️ Comando solo disponible para el administrador.")
+        return
+        
+    args = context.args
+    if len(args) != 2:
+        await update.message.reply_text("Uso: /setsaldo [user_id] [monto]")
+        return
+        
+    try:
+        target_user_id = args[0]
+        monto = float(args[1])
+    except ValueError:
+        await update.message.reply_text("Monto inválido.")
+        return
+        
+    nuevo_saldo = actualizar_saldo(target_user_id, monto)
+    await update.message.reply_text(f"✅ Saldo de {target_user_id} actualizado a {nuevo_saldo:.2f} CUP")
+
+# Función para procesar selección de apalancamiento
+async def process_leverage_selection(query, context, asset_id, currency, operation_type, leverage):
+    asset = ASSETS[asset_id]
+    price = get_current_price(asset_id, currency)
     
+    if price is None:
+        await query.edit_message_text("⚠️ Error al obtener precio. Intenta nuevamente.")
+        return
+    
+    # Calcular valor del pip con apalancamiento
+    valor_pip_cup = calcular_valor_pip(asset_id, CUP_RATE) * leverage
+    
+    try:
+        operation_data = {
+            "user_id": str(query.from_user.id),
+            "asset": asset_id,
+            "currency": currency,
+            "operation_type": operation_type,
+            "entry_price": price,
+            "apalancamiento": leverage,
+            "entry_time": datetime.now(timezone.utc).isoformat(),
+            "status": "pendiente"
+        }
+        response = supabase.table('operations').insert(operation_data).execute()
+        if response.data:
+            op_id = response.data[0]['id']
+            context.user_data['pending_operation'] = {
+                'id': op_id,
+                'asset_id': asset_id,
+                'currency': currency,
+                'operation_type': operation_type,
+                'entry_price': price,
+                'apalancamiento': leverage
+            }
+        else:
+            raise Exception("No data in response")
+    except Exception as e:
+        logger.error(f"Error saving operation: {e}")
+        await query.edit_message_text("⚠️ Error al guardar la operación. Intenta nuevamente.")
+        return
+    
+    await query.edit_message_text(
+        f"✅ *Operación registrada con apalancamiento x{leverage}!*\n\n"
+        f"• Activo: {asset['emoji']} {asset['name']} ({asset['symbol']})\n"
+        f"• Tipo: {'🟢 COMPRA' if operation_type == 'buy' else '🔴 VENTA'}\n"
+        f"• Precio: {price:.2f} {currency}\n"
+        f"• Valor de 1 pip: {valor_pip_cup:.2f} CUP\n\n"
+        f"Ahora establece el Stop Loss (SL) y Take Profit (TP):\n\n"
+        f"Envía el mensaje en el formato:\n"
+        f"SL [precio]\n"
+        f"TP [precio]\n\n"
+        f"Ejemplo:\n"
+        f"SL {price*0.95:.2f}\n"
+        f"TP {price*1.05:.2f}",
+        parse_mode="Markdown"
+    )
 
 # Main con webhook
 def main():
@@ -1337,12 +1527,14 @@ def main():
     application = Application.builder().token(TOKEN).build()
     
     application.add_handler(CommandHandler("start", start))
+    application.add_handler(CommandHandler("setsaldo", set_saldo))
     application.add_handler(CallbackQueryHandler(button_click))
     
     # Handlers en orden de prioridad
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, set_sl_tp))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, recibir_monto_riesgo))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, recibir_monto))
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, recibir_apalancamiento))
     application.add_handler(MessageHandler(filters.PHOTO, recibir_datos))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, recibir_datos))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, recibir_motivo))
