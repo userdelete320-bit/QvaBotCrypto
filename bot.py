@@ -1610,6 +1610,8 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         # Si no está en el estado de depósito, ignorar la foto
         pass
 
+# ... (todo el código anterior se mantiene igual)
+
 # Función keep-alive
 async def keep_alive(context: ContextTypes.DEFAULT_TYPE):
     try:
@@ -1626,9 +1628,8 @@ def main():
     
     application = Application.builder().token(TOKEN).build()
     
-    # Configurar keep-alive cada 5 minutos
-    job_queue = application.job_queue
-    job_queue.run_repeating(keep_alive, interval=300, first=10)  # 300 segundos = 5 minutos
+    # Configurar keep-alive después de inicializar la aplicación
+    application.job_queue.run_repeating(keep_alive, interval=300, first=10)  # 300 segundos = 5 minutos
     
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("setsaldo", set_saldo))
