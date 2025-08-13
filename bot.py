@@ -90,6 +90,16 @@ def calcular_pips_movidos(precio_inicial, precio_final, asset_id):
     pip_value = PIP_VALUES.get(asset_id, 0.01)
     return abs(precio_final - precio_inicial) / pip_value
 
+def calcular_max_sl(monto_riesgo, asset_id, entry_price, operation_type, leverage, cup_rate):
+    """Calcula el precio máximo permitido para el SL basado en el monto de riesgo"""
+    valor_pip = calcular_valor_pip(asset_id, cup_rate) * leverage
+    max_pips = monto_riesgo / valor_pip
+    
+    if operation_type == "buy":
+        return entry_price - (max_pips * PIP_VALUES[asset_id])
+    else:  # sell
+        return entry_price + (max_pips * PIP_VALUES[asset_id])
+
 # Gestión de saldo
 def obtener_saldo(user_id: str) -> float:
     try:
@@ -866,7 +876,153 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             }
             await query.edit_message_text("📝 Por favor, envía el motivo del rechazo:")
 
-# Handler para recibir SL/TP iniciales
+# Handler para recibir apalancamiento personalizado
+async def recibir_apalancamiento(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    user_id = str(update.message.from_user.id)
+    text = update.message.text.strip()
+    
+    if 'pending_leverage' not in context.user_data:
+        return
+    
+    leverage_data = context.user_data['pending_leverage']
+    
+    try:
+        leverage = int(text)
+        if leverage < 1 or leverage > 100:
+            await update.message.reply_text("⚠️ Apalancamiento inválido. Debe estar entre 1 y 100. Intenta nuevamente:")
+            return
+    except ValueError:
+        await update.message.reply_text("⚠️ Valor inválido. Ingresa un número entre 1 y 100:")
+        return
+    
+    # Procesar la selección de apalancamiento
+    asset_id = leverage_data['asset_id']
+    currency = leverage_data['currency']
+    operation_type = leverage_data['operation_type']
+    
+    # Obtener el precio actual
+    price = get_current_price(asset_id, currency)
+    if price is None:
+        await update.message.reply_text("⚠️ Error al obtener precio. Intenta nuevamente.")
+        return
+    
+    # Calcular valor del pip con apalancamiento
+    valor_pip_cup = calcular_valor_pip(asset_id, CUP_RATE) * leverage
+    
+    try:
+        operation_data = {
+            "user_id": user_id,
+            "asset": asset_id,
+            "currency": currency,
+            "operation_type": operation_type,
+            "entry_price": price,
+            "apalancamiento": leverage,
+            "entry_time": datetime.now(timezone.utc).isoformat(),
+            "status": "pendiente"
+        }
+        response = supabase.table('operations').insert(operation_data).execute()
+        if response.data:
+            op_id = response.data[0]['id']
+            context.user_data['pending_operation'] = {
+                'id': op_id,
+                'asset_id': asset_id,
+                'currency': currency,
+                'operation_type': operation_type,
+                'entry_price': price,
+                'apalancamiento': leverage
+            }
+        else:
+            raise Exception("No data in response")
+    except Exception as e:
+        logger.error(f"Error saving operation: {e}")
+        await update.message.reply_text("⚠️ Error al guardar la operación. Intenta nuevamente.")
+        return
+    
+    saldo = obtener_saldo(user_id)
+    await update.message.reply_text(
+        f"✅ *Operación registrada con apalancamiento x{leverage}!*\n\n"
+        f"• Activo: {ASSETS[asset_id]['emoji']} {ASSETS[asset_id]['name']} ({ASSETS[asset_id]['symbol']})\n"
+        f"• Tipo: {'🟢 COMPRA' if operation_type == 'buy' else '🔴 VENTA'}\n"
+        f"• Precio: {price:.2f} {currency}\n"
+        f"• Valor de 1 pip: {valor_pip_cup:.2f} CUP\n\n"
+        f"Ahora, por favor ingresa el monto que deseas arriesgar en CUP (mínimo {MIN_RIESGO} CUP, saldo actual: {saldo:.2f} CUP):",
+        parse_mode="Markdown"
+    )
+    del context.user_data['pending_leverage']
+
+# Handler para recibir monto de riesgo
+async def recibir_monto_riesgo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    user_id = str(update.message.from_user.id)
+    text = update.message.text.strip()
+    
+    if 'pending_operation' not in context.user_data:
+        return
+    
+    op_data = context.user_data['pending_operation']
+    
+    try:
+        monto_riesgo = float(text)
+        if monto_riesgo < MIN_RIESGO:
+            await update.message.reply_text(f"⚠️ El monto mínimo a arriesgar es {MIN_RIESGO} CUP. Por favor ingresa un monto válido:")
+            return
+            
+        # Verificar saldo
+        saldo_actual = obtener_saldo(user_id)
+        if monto_riesgo > saldo_actual:
+            await update.message.reply_text(f"⚠️ Saldo insuficiente. Tu saldo actual es: {saldo_actual:.2f} CUP. Ingresa un monto menor:")
+            return
+    except ValueError:
+        await update.message.reply_text("⚠️ Monto inválido. Por favor ingresa un número:")
+        return
+    
+    # Guardar el monto de riesgo en el contexto
+    context.user_data['pending_operation']['monto_riesgo'] = monto_riesgo
+    
+    # Calcular el SL máximo permitido
+    max_sl = calcular_max_sl(
+        monto_riesgo,
+        op_data['asset_id'],
+        op_data['entry_price'],
+        op_data['operation_type'],
+        op_data['apalancamiento'],
+        CUP_RATE
+    )
+    
+    asset = ASSETS[op_data['asset_id']]
+    currency = op_data['currency']
+    entry_price = op_data['entry_price']
+    leverage = op_data['apalancamiento']
+    
+    # Calcular valor de pip en CUP (con apalancamiento)
+    valor_pip_cup = calcular_valor_pip(op_data['asset_id'], CUP_RATE) * leverage
+    
+    # Determinar la dirección del SL según el tipo de operación
+    if op_data['operation_type'] == "buy":
+        sl_direction = "por debajo"
+        sl_example = entry_price * 0.98
+    else:
+        sl_direction = "por encima"
+        sl_example = entry_price * 1.02
+    
+    await update.message.reply_text(
+        f"✅ *Monto de riesgo configurado!*\n\n"
+        f"• Monto arriesgado: {monto_riesgo:.2f} CUP\n"
+        f"• Valor por pip: {valor_pip_cup:.2f} CUP\n"
+        f"• Ganancia/pérdida por pip: {valor_pip_cup:.2f} CUP\n\n"
+        f"Ahora establece el Stop Loss (SL) y Take Profit (TP).\n\n"
+        f"⚠️ *Límite de Stop Loss*:\n"
+        f"Debido a tu monto arriesgado, el SL debe estar {sl_direction} de:\n"
+        f"`{max_sl:.4f} {currency}`\n\n"
+        f"Envía el mensaje en el formato:\n"
+        f"SL [precio]\n"
+        f"TP [precio]\n\n"
+        f"Ejemplo:\n"
+        f"SL {sl_example:.4f}\n"
+        f"TP {entry_price * 1.05:.4f}",
+        parse_mode="Markdown"
+    )
+
+# Handler para recibir SL/TP
 async def set_sl_tp(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user_id = str(update.message.from_user.id)
     text = update.message.text.strip()
@@ -876,6 +1032,12 @@ async def set_sl_tp(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     
     op_data = context.user_data['pending_operation']
     op_id = op_data['id']
+    monto_riesgo = op_data.get('monto_riesgo')
+    
+    if not monto_riesgo or monto_riesgo < MIN_RIESGO:
+        await update.message.reply_text("⚠️ Error: Monto de riesgo no configurado o inválido.")
+        del context.user_data['pending_operation']
+        return
     
     # Verificar propiedad de la operación
     try:
@@ -925,7 +1087,25 @@ async def set_sl_tp(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await update.message.reply_text("Precios inválidos. Asegúrate de que sean números.")
         return
     
+    # Calcular el SL máximo permitido
+    max_sl = calcular_max_sl(
+        monto_riesgo,
+        asset_id,
+        entry_price,
+        operation_type,
+        leverage,
+        CUP_RATE
+    )
+    
+    # Validar SL contra el límite máximo
     if operation_type == "buy":
+        if sl_price > max_sl:
+            await update.message.reply_text(
+                f"❌ Stop Loss demasiado alto. Para proteger tu monto arriesgado, "
+                f"el SL debe ser menor o igual a {max_sl:.4f} {currency}.\n\n"
+                f"Por favor, ingresa un SL válido:"
+            )
+            return
         if sl_price >= entry_price:
             await update.message.reply_text(f"❌ Para COMPRA, el Stop Loss debe ser menor que el precio de entrada ({entry_price:.4f})")
             return
@@ -933,6 +1113,13 @@ async def set_sl_tp(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             await update.message.reply_text(f"❌ Para COMPRA, el Take Profit debe ser mayor que el precio de entrada ({entry_price:.4f})")
             return
     else:
+        if sl_price < max_sl:
+            await update.message.reply_text(
+                f"❌ Stop Loss demasiado bajo. Para proteger tu monto arriesgado, "
+                f"el SL debe ser mayor o igual a {max_sl:.4f} {currency}.\n\n"
+                f"Por favor, ingresa un SL válido:"
+            )
+            return
         if sl_price <= entry_price:
             await update.message.reply_text(f"❌ Para VENTA, el Stop Loss debe ser mayor que el precio de entrada ({entry_price:.4f})")
             return
@@ -941,9 +1128,11 @@ async def set_sl_tp(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             return
     
     try:
+        # Actualizar operación con SL, TP y monto riesgo
         supabase.table('operations').update({
             "stop_loss": sl_price,
-            "take_profit": tp_price
+            "take_profit": tp_price,
+            "monto_riesgo": monto_riesgo
         }).eq("id", op_id).execute()
         
         # Calcular pips entre entrada y SL/TP
@@ -955,69 +1144,20 @@ async def set_sl_tp(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         tp_cup = calcular_ganancia_pips(pips_to_tp, asset_id, CUP_RATE, leverage)
         
         await update.message.reply_text(
-            f"✅ *Stop Loss y Take Profit configurados!*\n\n"
+            f"✅ *Operación configurada exitosamente!*\n\n"
             f"• Activo: {asset['emoji']} {asset['name']} ({asset['symbol']})\n"
             f"• Apalancamiento: x{leverage}\n"
+            f"• Monto arriesgado: {monto_riesgo:.2f} CUP\n"
             f"• 🛑 Stop Loss: {sl_price:.4f} {currency} ({pips_to_sl:.1f} pips = {sl_cup:.2f} CUP)\n"
             f"• 🎯 Take Profit: {tp_price:.4f} {currency} ({pips_to_tp:.1f} pips = {tp_cup:.2f} CUP)\n\n"
-            f"Ahora, por favor ingresa el monto que deseas arriesgar en CUP (mínimo {MIN_RIESGO} CUP):",
-            parse_mode="Markdown"
-        )
-    except Exception as e:
-        logger.error(f"Error setting SL/TP: {e}")
-        await update.message.reply_text("⚠️ Error interno al configurar SL/TP.")
-
-# Handler para recibir monto de riesgo
-async def recibir_monto_riesgo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    user_id = str(update.message.from_user.id)
-    text = update.message.text.strip()
-    
-    if 'pending_operation' not in context.user_data:
-        return
-    
-    try:
-        monto_riesgo = float(text)
-        if monto_riesgo < MIN_RIESGO:
-            await update.message.reply_text(f"⚠️ El monto mínimo a arriesgar es {MIN_RIESGO} CUP. Por favor ingresa un monto válido:")
-            return
-            
-        # Verificar saldo
-        saldo_actual = obtener_saldo(user_id)
-        if monto_riesgo > saldo_actual:
-            await update.message.reply_text(f"⚠️ Saldo insuficiente. Tu saldo actual es: {saldo_actual:.2f} CUP. Ingresa un monto menor:")
-            return
-    except ValueError:
-        await update.message.reply_text("⚠️ Monto inválido. Por favor ingresa un número:")
-        return
-    
-    op_data = context.user_data['pending_operation']
-    op_id = op_data['id']
-    
-    # Guardar el monto de riesgo en la operación
-    try:
-        supabase.table('operations').update({
-            "monto_riesgo": monto_riesgo
-        }).eq("id", op_id).execute()
-        
-        # Guardar en contexto para uso posterior
-        context.user_data['pending_operation']['monto_riesgo'] = monto_riesgo
-        
-        # Calcular valor de pip en CUP (con apalancamiento)
-        valor_pip_cup = calcular_valor_pip(op_data['asset_id'], CUP_RATE) * op_data.get('apalancamiento', 1)
-        
-        await update.message.reply_text(
-            f"✅ *Monto de riesgo configurado!*\n\n"
-            f"• Monto arriesgado: {monto_riesgo:.2f} CUP\n"
-            f"• Valor por pip: {valor_pip_cup:.2f} CUP\n"
-            f"• Ganancia/pérdida por pip: {valor_pip_cup:.2f} CUP\n\n"
             f"Operación lista para monitoreo.",
             parse_mode="Markdown",
             reply_markup=get_main_keyboard()
         )
         del context.user_data['pending_operation']
     except Exception as e:
-        logger.error(f"Error setting risk amount: {e}")
-        await update.message.reply_text("⚠️ Error al guardar el monto de riesgo.")
+        logger.error(f"Error setting SL/TP: {e}")
+        await update.message.reply_text("⚠️ Error interno al configurar SL/TP.")
 
 # Handler para recibir montos de depósito/retiro
 async def recibir_monto(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1156,85 +1296,6 @@ async def recibir_motivo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     
     await update.message.reply_text("✅ Rechazo registrado y notificado al usuario.")
     del context.user_data['rechazo']
-
-# Handler para recibir apalancamiento personalizado
-async def recibir_apalancamiento(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    user_id = str(update.message.from_user.id)
-    text = update.message.text.strip()
-    
-    if 'pending_leverage' not in context.user_data:
-        return
-    
-    leverage_data = context.user_data['pending_leverage']
-    
-    try:
-        leverage = int(text)
-        if leverage < 1 or leverage > 100:
-            await update.message.reply_text("⚠️ Apalancamiento inválido. Debe estar entre 1 y 100. Intenta nuevamente:")
-            return
-    except ValueError:
-        await update.message.reply_text("⚠️ Valor inválido. Ingresa un número entre 1 y 100:")
-        return
-    
-    # Procesar la selección de apalancamiento
-    asset_id = leverage_data['asset_id']
-    currency = leverage_data['currency']
-    operation_type = leverage_data['operation_type']
-    
-    # Obtener el precio actual
-    price = get_current_price(asset_id, currency)
-    if price is None:
-        await update.message.reply_text("⚠️ Error al obtener precio. Intenta nuevamente.")
-        return
-    
-    # Calcular valor del pip con apalancamiento
-    valor_pip_cup = calcular_valor_pip(asset_id, CUP_RATE) * leverage
-    
-    try:
-        operation_data = {
-            "user_id": user_id,
-            "asset": asset_id,
-            "currency": currency,
-            "operation_type": operation_type,
-            "entry_price": price,
-            "apalancamiento": leverage,
-            "entry_time": datetime.now(timezone.utc).isoformat(),
-            "status": "pendiente"
-        }
-        response = supabase.table('operations').insert(operation_data).execute()
-        if response.data:
-            op_id = response.data[0]['id']
-            context.user_data['pending_operation'] = {
-                'id': op_id,
-                'asset_id': asset_id,
-                'currency': currency,
-                'operation_type': operation_type,
-                'entry_price': price,
-                'apalancamiento': leverage
-            }
-        else:
-            raise Exception("No data in response")
-    except Exception as e:
-        logger.error(f"Error saving operation: {e}")
-        await update.message.reply_text("⚠️ Error al guardar la operación. Intenta nuevamente.")
-        return
-    
-    await update.message.reply_text(
-        f"✅ *Operación registrada con apalancamiento x{leverage}!*\n\n"
-        f"• Activo: {ASSETS[asset_id]['emoji']} {ASSETS[asset_id]['name']} ({ASSETS[asset_id]['symbol']})\n"
-        f"• Tipo: {'🟢 COMPRA' if operation_type == 'buy' else '🔴 VENTA'}\n"
-        f"• Precio: {price:.2f} {currency}\n"
-        f"• Valor de 1 pip: {valor_pip_cup:.2f} CUP\n\n"
-        f"Ahora establece el Stop Loss (SL) y Take Profit (TP):\n\n"
-        f"Envía el mensaje en el formato:\n"
-        f"SL [precio]\n"
-        f"TP [precio]\n\n"
-        f"Ejemplo:\n"
-        f"SL {price*0.95:.2f}\n"
-        f"TP {price*1.05:.2f}",
-        parse_mode="Markdown"
-    )
-    del context.user_data['pending_leverage']
 
 # Función para comprobar operación
 async def check_operation(update: Update, context: ContextTypes.DEFAULT_TYPE, op_id: int):
@@ -1503,19 +1564,14 @@ async def process_leverage_selection(query, context, asset_id, currency, operati
         await query.edit_message_text("⚠️ Error al guardar la operación. Intenta nuevamente.")
         return
     
+    saldo = obtener_saldo(str(query.from_user.id))
     await query.edit_message_text(
         f"✅ *Operación registrada con apalancamiento x{leverage}!*\n\n"
         f"• Activo: {asset['emoji']} {asset['name']} ({asset['symbol']})\n"
         f"• Tipo: {'🟢 COMPRA' if operation_type == 'buy' else '🔴 VENTA'}\n"
         f"• Precio: {price:.2f} {currency}\n"
         f"• Valor de 1 pip: {valor_pip_cup:.2f} CUP\n\n"
-        f"Ahora establece el Stop Loss (SL) y Take Profit (TP):\n\n"
-        f"Envía el mensaje en el formato:\n"
-        f"SL [precio]\n"
-        f"TP [precio]\n\n"
-        f"Ejemplo:\n"
-        f"SL {price*0.95:.2f}\n"
-        f"TP {price*1.05:.2f}",
+        f"Ahora, por favor ingresa el monto que deseas arriesgar en CUP (mínimo {MIN_RIESGO} CUP, saldo actual: {saldo:.2f} CUP):",
         parse_mode="Markdown"
     )
 
@@ -1531,10 +1587,10 @@ def main():
     application.add_handler(CallbackQueryHandler(button_click))
     
     # Handlers en orden de prioridad
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, set_sl_tp))
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, recibir_monto_riesgo))
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, recibir_monto))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, recibir_apalancamiento))
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, recibir_monto_riesgo))
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, set_sl_tp))
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, recibir_monto))
     application.add_handler(MessageHandler(filters.PHOTO, recibir_datos))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, recibir_datos))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, recibir_motivo))
