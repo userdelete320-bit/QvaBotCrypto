@@ -1610,8 +1610,6 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         # Si no está en el estado de depósito, ignorar la foto
         pass
 
-# ... (todo el código anterior se mantiene igual)
-
 # Función keep-alive
 async def keep_alive(context: ContextTypes.DEFAULT_TYPE):
     try:
@@ -1627,12 +1625,7 @@ def main():
     WEBHOOK_URL = os.environ.get('WEBHOOK_URL', 'https://qvabotcrypto.onrender.com')
     
     # Crear aplicación con JobQueue explícito
-    application = (
-        Application.builder()
-        .token(TOKEN)
-        .job_queue(JobQueue())
-        .build()
-    )
+    application = Application.builder().token(TOKEN).build()
     
     # Configurar keep-alive
     application.job_queue.run_repeating(keep_alive, interval=300, first=10)
