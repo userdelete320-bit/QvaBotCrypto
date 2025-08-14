@@ -1,6 +1,7 @@
 import os
 import logging
 import requests
+import asyncio
 from datetime import datetime, timedelta, timezone
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
@@ -1751,22 +1752,29 @@ def main():
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_messages))
     application.add_handler(MessageHandler(filters.PHOTO, handle_photo))
     
-    logger.info("🤖 Iniciando Bot de Trading en modo Webhook")
-    logger.info(f"🔗 URL del webhook: {WEBHOOK_URL}/{TOKEN}")
-    logger.info(f"🔌 Escuchando en puerto: {PORT}")
+    logger.info("🤖 Iniciando Bot de Trading")
     
-    # Configuración de webhook simplificada
-    try:
+    # Determinar modo de ejecución
+    if WEBHOOK_URL and WEBHOOK_URL.strip() != '':
+        logger.info("🔗 Modo Webhook detectado")
+        logger.info(f"🌐 URL del webhook: {WEBHOOK_URL}/{TOKEN}")
+        logger.info(f"🔌 Escuchando en puerto: {PORT}")
+        
+        # Eliminar webhook existente antes de configurar uno nuevo
+        asyncio.run(application.bot.delete_webhook())
+        
+        # Configurar webhook
         application.run_webhook(
             listen="0.0.0.0",
             port=PORT,
             webhook_url=f"{WEBHOOK_URL}/{TOKEN}",
             drop_pending_updates=True
         )
-    except Exception as e:
-        logger.error(f"Error en webhook: {e}")
-        # Fallback a polling en caso de error
-        application.run_polling()
+    else:
+        logger.info("🔄 Modo Polling detectado")
+        # Asegurarse de eliminar cualquier webhook existente
+        asyncio.run(application.bot.delete_webhook())
+        application.run_polling(drop_pending_updates=True)
 
 if __name__ == "__main__":
     main()
