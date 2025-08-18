@@ -27,7 +27,7 @@ MIN_RETIRO = 6500
 CUP_RATE = 440
 CONFIRMATION_NUMBER = "59190241"
 CARD_NUMBER = "9227 0699 9532 8054"
-GROUP_ID = os.getenv(-"1002479699968")  # Se configura dinámicamente
+GROUP_ID = os.getenv("GROUP_ID", "-1002479699968")
 
 # Mapeo de activos
 ASSETS = {
