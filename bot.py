@@ -1,7 +1,6 @@
 import os
 import logging
 import requests
-import asyncio
 from datetime import datetime, timedelta, timezone
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
@@ -11,7 +10,8 @@ from telegram.ext import (
     ContextTypes,
     MessageHandler,
     filters,
-    JobQueue
+    JobQueue,
+    CallbackContext
 )
 from supabase import create_client, Client
 
@@ -21,13 +21,13 @@ ADMIN_ID = "5376388604"
 COINCAP_API_KEY = "c0b9354ec2c2d06d6395519f432b056c06f6340b62b72de1cf71a44ed9c6a36e"
 COINCAP_API_URL = "https://rest.coincap.io/v3"
 MAX_DAILY_CHECKS = 80
-MIN_DEPOSITO = 5000  # Actualizado a 5000 CUP
+MIN_DEPOSITO = 3000
 MIN_RIESGO = 5000
 MIN_RETIRO = 6500
 CUP_RATE = 440
 CONFIRMATION_NUMBER = "59190241"
 CARD_NUMBER = "9227 0699 9532 8054"
-CANAL_ID = os.getenv("CANAL_ID", "-1002479699968")  # ID del canal CromwellTrading
+GROUP_ID = os.getenv(-"1002479699968")  # Se configura dinámicamente
 
 # Mapeo de activos
 ASSETS = {
@@ -1253,19 +1253,20 @@ async def recibir_datos(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         return
     
     if tipo == 'deposito' and update.message.photo:
-        # Obtener file_id de la foto
+        # Guardar la mejor calidad de foto (última en la lista)
         photo = update.message.photo[-1]
-        file_id = photo.file_id
+        file = await photo.get_file()
+        file_path = file.file_path
         
-        # Crear solicitud usando file_id
-        solicitud_id = crear_solicitud(user_id, 'deposito', monto, comprobante=file_id)
+        # Crear solicitud
+        solicitud_id = crear_solicitud(user_id, 'deposito', monto, comprobante=file_path)
         
         if solicitud_id:
-            # Notificar al admin y al canal
+            # Notificar al admin y al grupo
             keyboard = get_admin_keyboard(solicitud_id, 'deposito')
             
-            # Mensaje para el canal
-            canal_message = (
+            # Mensaje para el grupo
+            grupo_message = (
                 f"📥 *Nueva solicitud de depósito*\n\n"
                 f"• Usuario: {user.full_name} ({username})\n"
                 f"• ID: `{user_id}`\n"
@@ -1275,23 +1276,26 @@ async def recibir_datos(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
                 f"• Número confirmación: `{CONFIRMATION_NUMBER}`"
             )
             
-            # Enviar notificación al canal si está configurado
-            if CANAL_ID:
+            # Obtener ID de grupo dinámico
+            group_id = context.bot_data.get('group_id', GROUP_ID)
+            
+            # Enviar notificación
+            if group_id:
                 try:
                     await context.bot.send_photo(
-                        chat_id=CANAL_ID,
-                        photo=file_id,
-                        caption=canal_message,
+                        chat_id=group_id,
+                        photo=file_path,
+                        caption=grupo_message,
                         parse_mode="Markdown",
                         reply_markup=keyboard
                     )
                 except Exception as e:
-                    logger.error(f"Error enviando al canal: {e}")
+                    logger.error(f"Error enviando al grupo: {e}")
                     # Notificar al admin si falla
                     await context.bot.send_photo(
                         chat_id=ADMIN_ID,
-                        photo=file_id,
-                        caption=f"{canal_message}\n\n⚠️ Error enviando al canal: {e}",
+                        photo=file_path,
+                        caption=f"{grupo_message}\n\n⚠️ Error enviando al grupo: {e}",
                         parse_mode="Markdown",
                         reply_markup=keyboard
                     )
@@ -1299,8 +1303,8 @@ async def recibir_datos(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
             # Siempre enviar al admin
             await context.bot.send_photo(
                 chat_id=ADMIN_ID,
-                photo=file_id,
-                caption=canal_message,
+                photo=file_path,
+                caption=grupo_message,
                 parse_mode="Markdown",
                 reply_markup=keyboard
             )
@@ -1321,11 +1325,11 @@ async def recibir_datos(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         solicitud_id = crear_solicitud(user_id, 'retiro', monto, datos=datos)
         
         if solicitud_id:
-            # Notificar al admin y al canal
+            # Notificar al admin y al grupo
             keyboard = get_admin_keyboard(solicitud_id, 'retiro')
             
-            # Mensaje para el canal
-            canal_message = (
+            # Mensaje para el grupo
+            grupo_message = (
                 f"📤 *Nueva solicitud de retiro*\n\n"
                 f"• Usuario: {user.full_name} ({username})\n"
                 f"• ID: `{user_id}`\n"
@@ -1334,21 +1338,24 @@ async def recibir_datos(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
                 f"• Datos:\n`{datos}`"
             )
             
-            # Enviar notificación al canal si está configurado
-            if CANAL_ID:
+            # Obtener ID de grupo dinámico
+            group_id = context.bot_data.get('group_id', GROUP_ID)
+            
+            # Enviar notificación
+            if group_id:
                 try:
                     await context.bot.send_message(
-                        chat_id=CANAL_ID,
-                        text=canal_message,
+                        chat_id=group_id,
+                        text=grupo_message,
                         parse_mode="Markdown",
                         reply_markup=keyboard
                     )
                 except Exception as e:
-                    logger.error(f"Error enviando al canal: {e}")
+                    logger.error(f"Error enviando al grupo: {e}")
                     # Notificar al admin si falla
                     await context.bot.send_message(
                         chat_id=ADMIN_ID,
-                        text=f"{canal_message}\n\n⚠️ Error enviando al canal: {e}",
+                        text=f"{grupo_message}\n\n⚠️ Error enviando al grupo: {e}",
                         parse_mode="Markdown",
                         reply_markup=keyboard
                     )
@@ -1356,7 +1363,7 @@ async def recibir_datos(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
             # Siempre enviar al admin
             await context.bot.send_message(
                 chat_id=ADMIN_ID,
-                text=canal_message,
+                text=grupo_message,
                 parse_mode="Markdown",
                 reply_markup=keyboard
             )
@@ -1631,6 +1638,26 @@ async def set_saldo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     nuevo_saldo = actualizar_saldo(target_user_id, monto)
     await update.message.reply_text(f"✅ Saldo de {target_user_id} actualizado a {nuevo_saldo:.2f} CUP")
 
+# Comando para establecer ID de grupo
+async def set_group_id(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    user_id = str(update.message.from_user.id)
+    if user_id != ADMIN_ID:
+        await update.message.reply_text("⚠️ Solo el administrador puede usar este comando.")
+        return
+        
+    args = context.args
+    if not args:
+        await update.message.reply_text("Uso: /setgroupid [id_grupo]")
+        return
+        
+    try:
+        group_id = args[0]
+        context.bot_data['group_id'] = group_id
+        await update.message.reply_text(f"✅ ID de grupo configurado a: {group_id}")
+    except Exception as e:
+        logger.error(f"Error setting group ID: {e}")
+        await update.message.reply_text("⚠️ Error al configurar el ID del grupo.")
+
 # Comando para obtener ID de chat
 async def get_chat_id(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     chat_id = update.message.chat_id
@@ -1745,6 +1772,7 @@ def main():
     # Comandos
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("setsaldo", set_saldo))
+    application.add_handler(CommandHandler("setgroupid", set_group_id))
     application.add_handler(CommandHandler("getchatid", get_chat_id))
     
     # Handlers
@@ -1752,29 +1780,18 @@ def main():
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_messages))
     application.add_handler(MessageHandler(filters.PHOTO, handle_photo))
     
-    logger.info("🤖 Iniciando Bot de Trading")
+    logger.info("🤖 Iniciando Bot de Trading en modo Webhook")
+    logger.info(f"🔗 URL del webhook: {WEBHOOK_URL}/{TOKEN}")
+    logger.info(f"🔌 Escuchando en puerto: {PORT}")
     
-    # Determinar modo de ejecución
-    if WEBHOOK_URL and WEBHOOK_URL.strip() != '':
-        logger.info("🔗 Modo Webhook detectado")
-        logger.info(f"🌐 URL del webhook: {WEBHOOK_URL}/{TOKEN}")
-        logger.info(f"🔌 Escuchando en puerto: {PORT}")
-        
-        # Eliminar webhook existente antes de configurar uno nuevo
-        asyncio.run(application.bot.delete_webhook())
-        
-        # Configurar webhook
-        application.run_webhook(
-            listen="0.0.0.0",
-            port=PORT,
-            webhook_url=f"{WEBHOOK_URL}/{TOKEN}",
-            drop_pending_updates=True
-        )
-    else:
-        logger.info("🔄 Modo Polling detectado")
-        # Asegurarse de eliminar cualquier webhook existente
-        asyncio.run(application.bot.delete_webhook())
-        application.run_polling(drop_pending_updates=True)
+    application.run_webhook(
+        listen="0.0.0.0",
+        port=PORT,
+        url_path=TOKEN,
+        webhook_url=f"{WEBHOOK_URL}/{TOKEN}",
+        cert=None,
+        drop_pending_updates=True
+    )
 
 if __name__ == "__main__":
     main()
