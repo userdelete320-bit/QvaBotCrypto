@@ -21,7 +21,7 @@ ADMIN_ID = "5376388604"
 COINCAP_API_KEY = "c0b9354ec2c2d06d6395519f432b056c06f6340b62b72de1cf71a44ed9c6a36e"
 COINCAP_API_URL = "https://rest.coincap.io/v3"
 MAX_DAILY_CHECKS = 80
-MIN_DEPOSITO = 3000
+MIN_DEPOSITO = 5000  # Cambiado a 5000 CUP
 MIN_RIESGO = 5000
 MIN_RETIRO = 6500
 CUP_RATE = 440
@@ -122,7 +122,7 @@ def actualizar_saldo(user_id: str, monto: float) -> float:
         return saldo_actual
 
 # Solicitudes
-def crear_solicitud(user_id: str, tipo: str, monto: float, comprobante: str = None, datos: str = None) -> int:
+def crear_solicitud(user_id: str, tipo: str, monto: float, datos: str = None) -> int:
     try:
         solicitud_data = {
             'user_id': user_id,
@@ -131,7 +131,6 @@ def crear_solicitud(user_id: str, tipo: str, monto: float, comprobante: str = No
             'estado': 'pendiente',
             'fecha_solicitud': datetime.now(timezone.utc).isoformat()
         }
-        if comprobante: solicitud_data['comprobante'] = comprobante
         if datos: solicitud_data['datos'] = datos
 
         response = supabase.table('solicitudes').insert(solicitud_data).execute()
@@ -606,14 +605,20 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         if saldo <= 0:
             await query.edit_message_text(
                 "⚠️ No tienes saldo disponible para retirar.",
-                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Atrás", callback_data="balance")]])
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("🔙 Atrás", callback_data="balance")],
+                    [InlineKeyboardButton("🏠 Menú Principal", callback_data="back_main")]
+                ])
             )
             return
             
         if saldo < MIN_RETIRO:
             await query.edit_message_text(
                 f"⚠️ Saldo insuficiente para retirar. El mínimo es {MIN_RETIRO} CUP.",
-                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Atrás", callback_data="balance")]])
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("🔙 Atrás", callback_data="balance")],
+                    [InlineKeyboardButton("🏠 Menú Principal", callback_data="back_main")]
+                ])
             )
             return
             
@@ -1249,17 +1254,15 @@ async def recibir_datos(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     monto = solicitud.get('monto')
     
     if not tipo or not monto:
-        await update.message.reply_text("⚠️ Error en el proceso. Por favor comienza nuevamente.")
+        await update.message.reply_text(
+            "⚠️ Error en el proceso. Por favor comienza nuevamente.",
+            reply_markup=get_navigation_keyboard()
+        )
         return
     
     if tipo == 'deposito' and update.message.photo:
-        # Guardar la mejor calidad de foto (última en la lista)
-        photo = update.message.photo[-1]
-        file = await photo.get_file()
-        file_path = file.file_path
-        
-        # Crear solicitud
-        solicitud_id = crear_solicitud(user_id, 'deposito', monto, comprobante=file_path)
+        # Crear solicitud (sin guardar la imagen)
+        solicitud_id = crear_solicitud(user_id, 'deposito', monto)
         
         if solicitud_id:
             # Notificar al admin y al grupo
@@ -1279,35 +1282,49 @@ async def recibir_datos(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
             # Obtener ID de grupo dinámico
             group_id = context.bot_data.get('group_id', GROUP_ID)
             
-            # Enviar notificación
+            # Reenviar la foto original al grupo
             if group_id:
                 try:
-                    await context.bot.send_photo(
+                    # Reenviar el mensaje con la foto
+                    await context.bot.forward_message(
                         chat_id=group_id,
-                        photo=file_path,
-                        caption=grupo_message,
+                        from_chat_id=update.message.chat_id,
+                        message_id=update.message.message_id
+                    )
+                    # Enviar detalles como mensaje separado
+                    await context.bot.send_message(
+                        chat_id=group_id,
+                        text=grupo_message,
                         parse_mode="Markdown",
                         reply_markup=keyboard
                     )
                 except Exception as e:
                     logger.error(f"Error enviando al grupo: {e}")
                     # Notificar al admin si falla
-                    await context.bot.send_photo(
+                    await context.bot.forward_message(
                         chat_id=ADMIN_ID,
-                        photo=file_path,
-                        caption=f"{grupo_message}\n\n⚠️ Error enviando al grupo: {e}",
+                        from_chat_id=update.message.chat_id,
+                        message_id=update.message.message_id
+                    )
+                    await context.bot.send_message(
+                        chat_id=ADMIN_ID,
+                        text=f"{grupo_message}\n\n⚠️ Error enviando al grupo: {e}",
                         parse_mode="Markdown",
                         reply_markup=keyboard
                     )
-            
-            # Siempre enviar al admin
-            await context.bot.send_photo(
-                chat_id=ADMIN_ID,
-                photo=file_path,
-                caption=grupo_message,
-                parse_mode="Markdown",
-                reply_markup=keyboard
-            )
+            else:
+                # Reenviar directamente al admin si no hay grupo
+                await context.bot.forward_message(
+                    chat_id=ADMIN_ID,
+                    from_chat_id=update.message.chat_id,
+                    message_id=update.message.message_id
+                )
+                await context.bot.send_message(
+                    chat_id=ADMIN_ID,
+                    text=grupo_message,
+                    parse_mode="Markdown",
+                    reply_markup=keyboard
+                )
             
             # Respuesta al usuario con botones
             await update.message.reply_text(
@@ -1315,7 +1332,10 @@ async def recibir_datos(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
                 reply_markup=get_navigation_keyboard()
             )
         else:
-            await update.message.reply_text("⚠️ Error al crear la solicitud. Intenta nuevamente.")
+            await update.message.reply_text(
+                "⚠️ Error al crear la solicitud. Intenta nuevamente.",
+                reply_markup=get_navigation_keyboard()
+            )
         
         del context.user_data['solicitud']
     
@@ -1352,13 +1372,6 @@ async def recibir_datos(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
                     )
                 except Exception as e:
                     logger.error(f"Error enviando al grupo: {e}")
-                    # Notificar al admin si falla
-                    await context.bot.send_message(
-                        chat_id=ADMIN_ID,
-                        text=f"{grupo_message}\n\n⚠️ Error enviando al grupo: {e}",
-                        parse_mode="Markdown",
-                        reply_markup=keyboard
-                    )
             
             # Siempre enviar al admin
             await context.bot.send_message(
@@ -1374,7 +1387,10 @@ async def recibir_datos(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
                 reply_markup=get_navigation_keyboard()
             )
         else:
-            await update.message.reply_text("⚠️ Error al crear la solicitud. Intenta nuevamente.")
+            await update.message.reply_text(
+                "⚠️ Error al crear la solicitud. Intenta nuevamente.",
+                reply_markup=get_navigation_keyboard()
+            )
         
         del context.user_data['solicitud']
 
@@ -1733,6 +1749,70 @@ async def handle_text_messages(update: Update, context: ContextTypes.DEFAULT_TYP
         await update.message.reply_text("Por favor, envía el comprobante (foto) o los datos de retiro (texto) según corresponda.")
     elif 'rechazo' in user_data:
         await recibir_motivo(update, context)
+    elif 'modifying' in user_data:
+        # Procesar modificación de SL/TP
+        text = update.message.text.strip().upper()
+        mod_type = context.user_data['modifying']['type']
+        op_id = context.user_data['modifying']['op_id']
+        
+        try:
+            # Extraer el precio
+            if text.startswith(f"{mod_type} "):
+                new_price = float(text[len(mod_type)+1:].strip())
+            else:
+                new_price = float(text)
+        except ValueError:
+            await update.message.reply_text("⚠️ Precio inválido. Por favor ingresa un número:")
+            return
+        
+        try:
+            # Obtener la operación
+            response = supabase.table('operations').select("*").eq("id", op_id).execute()
+            op_data = response.data[0] if response.data else None
+            
+            if not op_data or op_data['user_id'] != str(update.message.from_user.id):
+                await update.message.reply_text("⚠️ Operación no encontrada.")
+                del context.user_data['modifying']
+                return
+                
+            # Validar nuevo precio
+            if mod_type == "SL":
+                if op_data['operation_type'] == "buy":
+                    if new_price >= op_data['entry_price']:
+                        await update.message.reply_text("❌ Para COMPRA, el SL debe ser menor que el precio de entrada.")
+                        return
+                else:  # sell
+                    if new_price <= op_data['entry_price']:
+                        await update.message.reply_text("❌ Para VENTA, el SL debe ser mayor que el precio de entrada.")
+                        return
+                
+                # Actualizar SL
+                supabase.table('operations').update({"stop_loss": new_price}).eq("id", op_id).execute()
+                await update.message.reply_text(
+                    f"✅ Stop Loss actualizado a {new_price:.4f}",
+                    reply_markup=get_operation_detail_keyboard(op_id, False)
+                
+            else:  # TP
+                if op_data['operation_type'] == "buy":
+                    if new_price <= op_data['entry_price']:
+                        await update.message.reply_text("❌ Para COMPRA, el TP debe ser mayor que el precio de entrada.")
+                        return
+                else:  # sell
+                    if new_price >= op_data['entry_price']:
+                        await update.message.reply_text("❌ Para VENTA, el TP debe ser menor que el precio de entrada.")
+                        return
+                
+                # Actualizar TP
+                supabase.table('operations').update({"take_profit": new_price}).eq("id", op_id).execute()
+                await update.message.reply_text(
+                    f"✅ Take Profit actualizado a {new_price:.4f}",
+                    reply_markup=get_operation_detail_keyboard(op_id, False)
+            
+            del context.user_data['modifying']
+            
+        except Exception as e:
+            logger.error(f"Error updating SL/TP: {e}")
+            await update.message.reply_text("⚠️ Error al actualizar. Intenta nuevamente.")
     else:
         # Si no coincide con ningún estado, mostrar menú principal
         await update.message.reply_text(
