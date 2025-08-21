@@ -1749,8 +1749,7 @@ async def handle_text_messages(update: Update, context: ContextTypes.DEFAULT_TYP
         await update.message.reply_text("Por favor, envía el comprobante (foto) o los datos de retiro (texto) según corresponda.")
     elif 'rechazo' in user_data:
         await recibir_motivo(update, context)
-    
-elif 'modifying' in user_data:
+    elif 'modifying' in user_data:
     # Procesar modificación de SL/TP
     text = update.message.text.strip().upper()
     mod_type = context.user_data['modifying']['type']
@@ -1815,7 +1814,7 @@ elif 'modifying' in user_data:
     except Exception as e:
         logger.error(f"Error updating SL/TP: {e}")
         await update.message.reply_text("⚠️ Error al actualizar. Intenta nuevamente.")
-    
+
     else:
         # Si no coincide con ningún estado, mostrar menú principal
         await update.message.reply_text(
