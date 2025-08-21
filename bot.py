@@ -1792,7 +1792,7 @@ async def handle_text_messages(update: Update, context: ContextTypes.DEFAULT_TYP
                     f"✅ Stop Loss actualizado a {new_price:.4f}",
                     reply_markup=get_operation_detail_keyboard(op_id, False)
                 
-            else:  # TP
+            else: 
                 if op_data['operation_type'] == "buy":
                     if new_price <= op_data['entry_price']:
                         await update.message.reply_text("❌ Para COMPRA, el TP debe ser mayor que el precio de entrada.")
