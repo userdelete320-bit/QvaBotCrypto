@@ -1750,7 +1750,7 @@ async def handle_text_messages(update: Update, context: ContextTypes.DEFAULT_TYP
     elif 'rechazo' in user_data:
         await recibir_motivo(update, context)
     
-            elif 'modifying' in user_data:
+elif 'modifying' in user_data:
     # Procesar modificación de SL/TP
     text = update.message.text.strip().upper()
     mod_type = context.user_data['modifying']['type']
@@ -1815,6 +1815,7 @@ async def handle_text_messages(update: Update, context: ContextTypes.DEFAULT_TYP
     except Exception as e:
         logger.error(f"Error updating SL/TP: {e}")
         await update.message.reply_text("⚠️ Error al actualizar. Intenta nuevamente.")
+    
     else:
         # Si no coincide con ningún estado, mostrar menú principal
         await update.message.reply_text(
