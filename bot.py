@@ -1747,9 +1747,10 @@ async def handle_text_messages(update: Update, context: ContextTypes.DEFAULT_TYP
         # En este caso, el siguiente paso puede ser una foto (para depósito) o texto (para retiro)
         # Pero como esta función solo maneja texto, lo dejamos para el handler de fotos
         await update.message.reply_text("Por favor, envía el comprobante (foto) o los datos de retiro (texto) según corresponda.")
-    elif 'rechazo' in user_data:
-        await recibir_motivo(update, context)
+   # ... código anterior ...
 
+elif 'rechazo' in user_data:
+    await recibir_motivo(update, context)
 elif 'modifying' in user_data:
     # Procesar modificación de SL/TP
     text = update.message.text.strip().upper()
@@ -1821,7 +1822,9 @@ else:
     await update.message.reply_text(
         "Selecciona una opción:",
         reply_markup=get_main_keyboard()
-)
+    )
+
+# ... código posterior ...
 # Handler para fotos (solo para comprobantes de depósito)
 async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user_data = context.user_data
