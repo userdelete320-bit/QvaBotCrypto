@@ -1819,12 +1819,6 @@ async def handle_text_messages(update: Update, context: ContextTypes.DEFAULT_TYP
             "Selecciona una opción:",
             reply_markup=get_main_keyboard()
         )
-else:
-    # Si no coincide con ningún estado, mostrar menú principal
-    await update.message.reply_text(
-        "Selecciona una opción:",
-        reply_markup=get_main_keyboard()
-    )
 
 # Handler para fotos (solo para comprobantes de depósito)
 async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
