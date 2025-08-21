@@ -1791,6 +1791,7 @@ async def handle_text_messages(update: Update, context: ContextTypes.DEFAULT_TYP
                 await update.message.reply_text(
                     f"✅ Stop Loss actualizado a {new_price:.4f}",
                     reply_markup=get_operation_detail_keyboard(op_id, False)
+                )
                 
                 else:
                     if op_data['operation_type'] == "buy":
