@@ -1732,6 +1732,7 @@ async def process_leverage_selection(query, context, asset_id, currency, operati
     )
 
 # Función unificada para mensajes de texto
+
 async def handle_text_messages(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user_data = context.user_data
     
@@ -1744,78 +1745,80 @@ async def handle_text_messages(update: Update, context: ContextTypes.DEFAULT_TYP
     elif 'solicitud' in user_data and 'monto' not in user_data['solicitud']:
         await recibir_monto(update, context)
     elif 'solicitud' in user_data and 'monto' in user_data['solicitud']:
-        # En este caso, el siguiente paso puede ser una foto (para depósito) o texto (para retiro)
-        # Pero como esta función solo maneja texto, lo dejamos para el handler de fotos
         await update.message.reply_text("Por favor, envía el comprobante (foto) o los datos de retiro (texto) según corresponda.")
-
-elif 'rechazo' in user_data:
-    await recibir_motivo(update, context)
-elif 'modifying' in user_data:
-    # Procesar modificación de SL/TP
-    text = update.message.text.strip().upper()
-    mod_type = context.user_data['modifying']['type']
-    op_id = context.user_data['modifying']['op_id']
-    
-    try:
-        # Extraer el precio
-        if text.startswith(f"{mod_type} "):
-            new_price = float(text[len(mod_type)+1:].strip())
-        else:
-            new_price = float(text)
-    except ValueError:
-        await update.message.reply_text("⚠️ Precio inválido. Por favor ingresa un número:")
-        return
-    
-    try:
-        # Obtener la operación
-        response = supabase.table('operations').select("*").eq("id", op_id).execute()
-        op_data = response.data[0] if response.data else None
+    elif 'rechazo' in user_data:
+        await recibir_motivo(update, context)
+    elif 'modifying' in user_data:
+        # Procesar modificación de SL/TP
+        text = update.message.text.strip().upper()
+        mod_data = context.user_data['modifying']
+        mod_type = mod_data['type']
+        op_id = mod_data['op_id']
         
-        if not op_data or op_data['user_id'] != str(update.message.from_user.id):
-            await update.message.reply_text("⚠️ Operación no encontrada.")
-            del context.user_data['modifying']
+        try:
+            # Extraer el precio
+            if text.startswith(f"{mod_type} "):
+                new_price = float(text[len(mod_type)+1:].strip())
+            else:
+                new_price = float(text)
+        except ValueError:
+            await update.message.reply_text("⚠️ Precio inválido. Por favor ingresa un número:")
             return
-            
-        # Validar nuevo precio
-        if mod_type == "SL":
-            if op_data['operation_type'] == "buy":
-                if new_price >= op_data['entry_price']:
-                    await update.message.reply_text("❌ Para COMPRA, el SL debe ser menor que el precio de entrada.")
-                    return
-            else:  # sell
-                if new_price <= op_data['entry_price']:
-                    await update.message.reply_text("❌ Para VENTA, el SL debe ser mayor que el precio de entrada.")
-                    return
-            
-            # Actualizar SL
-            supabase.table('operations').update({"stop_loss": new_price}).eq("id", op_id).execute()
-            await update.message.reply_text(
-                f"✅ Stop Loss actualizado a {new_price:.4f}",
-                reply_markup=get_operation_detail_keyboard(op_id, False)
-            )
-        else:  # TP
-            if op_data['operation_type'] == "buy":
-                if new_price <= op_data['entry_price']:
-                    await update.message.reply_text("❌ Para COMPRA, el TP debe ser mayor que el precio de entrada.")
-                    return
-            else:  # sell
-                if new_price >= op_data['entry_price']:
-                    await update.message.reply_text("❌ Para VENTA, el TP debe ser menor que el precio de entrada.")
-                    return
-            
-            # Actualizar TP
-            supabase.table('operations').update({"take_profit": new_price}).eq("id", op_id).execute()
-            await update.message.reply_text(
-                f"✅ Take Profit actualizado a {new_price:.4f}",
-                reply_markup=get_operation_detail_keyboard(op_id, False)
-            )
         
-        del context.user_data['modifying']
-        
-    except Exception as e:
-        logger.error(f"Error updating SL/TP: {e}")
-        await update.message.reply_text("⚠️ Error al actualizar. Intenta nuevamente.")
-
+        try:
+            # Obtener la operación
+            response = supabase.table('operations').select("*").eq("id", op_id).execute()
+            op_data = response.data[0] if response.data else None
+            
+            if not op_data or op_data['user_id'] != str(update.message.from_user.id):
+                await update.message.reply_text("⚠️ Operación no encontrada.")
+                del context.user_data['modifying']
+                return
+                
+            # Validar nuevo precio
+            if mod_type == "SL":
+                if op_data['operation_type'] == "buy":
+                    if new_price >= op_data['entry_price']:
+                        await update.message.reply_text("❌ Para COMPRA, el SL debe ser menor que el precio de entrada.")
+                        return
+                else:  # sell
+                    if new_price <= op_data['entry_price']:
+                        await update.message.reply_text("❌ Para VENTA, el SL debe ser mayor que el precio de entrada.")
+                        return
+                
+                # Actualizar SL
+                supabase.table('operations').update({"stop_loss": new_price}).eq("id", op_id).execute()
+                await update.message.reply_text(
+                    f"✅ Stop Loss actualizado a {new_price:.4f}",
+                    reply_markup=get_operation_detail_keyboard(op_id, False)
+                )
+            else:  # TP
+                if op_data['operation_type'] == "buy":
+                    if new_price <= op_data['entry_price']:
+                        await update.message.reply_text("❌ Para COMPRA, el TP debe ser mayor que el precio de entrada.")
+                        return
+                else:  # sell
+                    if new_price >= op_data['entry_price']:
+                        await update.message.reply_text("❌ Para VENTA, el TP debe ser menor que el precio de entrada.")
+                        return
+                
+                # Actualizar TP
+                supabase.table('operations').update({"take_profit": new_price}).eq("id", op_id).execute()
+                await update.message.reply_text(
+                    f"✅ Take Profit actualizado a {new_price:.4f}",
+                    reply_markup=get_operation_detail_keyboard(op_id, False)
+                )
+            
+            del context.user_data['modifying']
+            
+        except Exception as e:
+            logger.error(f"Error updating SL/TP: {e}")
+            await update.message.reply_text("⚠️ Error al actualizar. Intenta nuevamente.")
+    else:
+        await update.message.reply_text(
+            "Selecciona una opción:",
+            reply_markup=get_main_keyboard()
+        )
 else:
     # Si no coincide con ningún estado, mostrar menú principal
     await update.message.reply_text(
