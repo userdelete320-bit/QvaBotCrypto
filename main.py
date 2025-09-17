@@ -3,7 +3,7 @@ import logging
 from telegram.ext import (
     Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters, JobQueue
 )
-from config import TOKEN
+from config import TOKEN, ASSETS, GROUP_ID  # Importar ASSETS y GROUP_ID
 from handlers.start import start
 from handlers.trade import (
     process_leverage_selection, recibir_monto_riesgo, set_sl_tp, 
@@ -22,7 +22,8 @@ from handlers.admin import (
     approve_request, reject_request, receive_rejection_reason
 )
 from jobs import keep_alive
-from keyboards import get_main_keyboard, get_navigation_keyboard
+from keyboards import get_main_keyboard, get_navigation_keyboard, get_currency_keyboard, get_trade_keyboard, get_apalancamiento_keyboard
+from utils import get_current_price
 
 # Configuración de logging
 logging.basicConfig(
