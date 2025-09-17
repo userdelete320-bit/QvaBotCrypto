@@ -6,7 +6,7 @@ import logging
 logger = logging.getLogger(__name__)
 supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 
-# Funciones de saldo (de saldo.py mejoradas)
+# Funciones de saldo
 def obtener_saldo(user_id: str) -> float:
     try:
         response = supabase.table('balance').select('saldo').eq('user_id', user_id).execute()
@@ -37,7 +37,7 @@ def actualizar_saldo(user_id: str, monto: float) -> float:
         logger.error(f"Error actualizando saldo: {e}")
         return saldo_actual
 
-# Funciones de solicitudes (de saldo.py mejoradas)
+# Funciones de solicitudes
 def crear_solicitud(user_id: str, tipo: str, monto: float, comprobante: str = None, datos: str = None) -> int:
     try:
         solicitud_data = {
@@ -56,6 +56,14 @@ def crear_solicitud(user_id: str, tipo: str, monto: float, comprobante: str = No
         return response.data[0]['id'] if response.data else None
     except Exception as e:
         logger.error(f"Error creando solicitud: {e}")
+        return None
+
+def obtener_solicitud(solicitud_id: int):
+    try:
+        response = supabase.table('solicitudes').select('*').eq('id', solicitud_id).execute()
+        return response.data[0] if response.data else None
+    except Exception as e:
+        logger.error(f"Error obteniendo solicitud: {e}")
         return None
 
 def actualizar_solicitud(solicitud_id: int, estado: str, motivo: str = None) -> bool:
@@ -147,15 +155,6 @@ def actualizar_operacion(op_id: int, update_data: dict) -> bool:
     except Exception as e:
         logger.error(f"Error actualizando operación: {e}")
         return False
-
-# database.py (agregar esta función)
-def obtener_solicitud(solicitud_id: int):
-    try:
-        response = supabase.table('solicitudes').select('*').eq('id', solicitud_id).execute()
-        return response.data[0] if response.data else None
-    except Exception as e:
-        logger.error(f"Error obteniendo solicitud: {e}")
-        return None
 
 def obtener_operaciones_activas(user_id: str):
     try:
