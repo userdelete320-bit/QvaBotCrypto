@@ -1,7 +1,7 @@
 import os
 
 # Configuración
-TOKEN = os.getenv("TELEGRAM_TOKEN")
+TOKEN = os.getenv("8102571019:AAGgI6bQflrd8T9snd9kO4_Es7eQCg2cBmo")
 ADMIN_ID = "5376388604"
 COINCAP_API_KEY = "c0b9354ec2c2d06d6395519f432b056c06f6340b62b72de1cf71a44ed9c6a36e"
 COINCAP_API_URL = "https://rest.coincap.io/v3"
