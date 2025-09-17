@@ -148,6 +148,15 @@ def actualizar_operacion(op_id: int, update_data: dict) -> bool:
         logger.error(f"Error actualizando operación: {e}")
         return False
 
+# database.py (agregar esta función)
+def obtener_solicitud(solicitud_id: int):
+    try:
+        response = supabase.table('solicitudes').select('*').eq('id', solicitud_id).execute()
+        return response.data[0] if response.data else None
+    except Exception as e:
+        logger.error(f"Error obteniendo solicitud: {e}")
+        return None
+
 def obtener_operaciones_activas(user_id: str):
     try:
         response = supabase.table('operations').select(
