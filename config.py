@@ -14,6 +14,10 @@ CONFIRMATION_NUMBER = "59190241"
 CARD_NUMBER = "9227 0699 9532 8054"
 GROUP_ID = os.getenv("GROUP_ID", "-1002479699968")
 
+# Configuración de conexión a base de datos
+MAX_RETRIES = 3
+RETRY_DELAY = 2  # segundos
+
 # Mapeo de activos
 ASSETS = {
     "bitcoin": {"symbol": "BTC", "name": "Bitcoin", "coincap_id": "bitcoin", "emoji": "🪙"},
@@ -32,7 +36,7 @@ ASSETS = {
     "bitcoin-cash": {"symbol": "BCH", "name": "Bitcoin Cash", "coincap_id": "bitcoin-cash", "emoji": "💰"}
 }
 
-# Valores de pip (de pip_calculator.py)
+# Valores de pip
 PIP_VALUES = {
     "bitcoin": 0.01,      # 1 pip = 0.01 USD
     "ethereum": 0.01,     # 1 pip = 0.01 USD
