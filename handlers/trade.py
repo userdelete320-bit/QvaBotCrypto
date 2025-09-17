@@ -1,8 +1,8 @@
 from telegram import Update
 from telegram.ext import ContextTypes
 from config import ASSETS, MIN_RIESGO, CUP_RATE, PIP_VALUES
-from utils import get_current_price, calcular_max_sl
-from keyboards import get_main_keyboard, get_currency_keyboard, get_trade_keyboard, get_apalancamiento_keyboard, get_confirmation_keyboard
+from utils import get_current_price, calcular_max_sl, calcular_valor_pip
+from keyboards import get_main_keyboard, get_currency_keyboard, get_trade_keyboard, get_apalancamiento_keyboard, get_confirmation_keyboard, get_navigation_keyboard
 from database import crear_operacion, actualizar_saldo, obtener_saldo
 import logging
 
@@ -22,13 +22,18 @@ async def process_leverage_selection(update, context, asset_id, currency, operat
         'entry_price': price
     }
     
+    # Obtener saldo del usuario
+    user_id = str(update.from_user.id if hasattr(update, 'from_user') else update.message.from_user.id)
+    saldo_actual = obtener_saldo(user_id)
+    
     message = (
         f"📊 Configuración de operación\n\n"
         f"{asset['emoji']} {asset['name']} ({asset['symbol']})\n"
         f"Operación: {operation_type_text}\n"
         f"Apalancamiento: x{leverage}\n"
-        f"Precio actual: {price:.8f} {currency}\n\n"
-        f"Por favor, envía el monto que deseas arriesgar (en CUP):"
+        f"Precio actual: {price:.8f} {currency}\n"
+        f"💳 Tu saldo actual: {saldo_actual:.2f} CUP\n\n"
+        f"Por favor, envía el monto que deseas arriesgar (en CUP, mínimo {MIN_RIESGO} CUP):"
     )
     
     if hasattr(update, 'edit_message_text'):
@@ -44,8 +49,22 @@ async def recibir_monto_riesgo(update: Update, context: ContextTypes.DEFAULT_TYP
     
     try:
         monto_riesgo = float(text)
+        saldo_actual = obtener_saldo(user_id)
+        
         if monto_riesgo < MIN_RIESGO:
-            await update.message.reply_text(f"❌ El monto de riesgo mínimo es {MIN_RIESGO} CUP. Intenta nuevamente.")
+            await update.message.reply_text(
+                f"❌ El monto de riesgo mínimo es {MIN_RIESGO} CUP. Intenta nuevamente.\n"
+                f"💳 Tu saldo actual: {saldo_actual:.2f} CUP"
+            )
+            return
+            
+        if monto_riesgo > saldo_actual:
+            await update.message.reply_text(
+                f"❌ No tienes suficiente saldo. \n"
+                f"💳 Tu saldo actual: {saldo_actual:.2f} CUP\n"
+                f"📋 Monto solicitado: {monto_riesgo} CUP\n\n"
+                "Por favor, envía un monto menor o realiza un depósito."
+            )
             return
             
         trade_data = context.user_data.get('trade_data', {})
@@ -67,6 +86,7 @@ async def recibir_monto_riesgo(update: Update, context: ContextTypes.DEFAULT_TYP
         await update.message.reply_text(
             f"📊 Análisis de riesgo\n\n"
             f"💰 Monto de riesgo: {monto_riesgo} CUP\n"
+            f"💳 Saldo restante: {saldo_actual - monto_riesgo:.2f} CUP\n"
             f"📏 SL máximo: {max_sl_pips:.2f} pips\n"
             f"💵 Valor por pip: {valor_pip:.2f} CUP\n\n"
             f"Por favor, envía el valor para el Stop Loss (en pips):"
