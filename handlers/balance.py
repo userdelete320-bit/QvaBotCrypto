@@ -1,8 +1,8 @@
 from telegram import Update
 from telegram.ext import ContextTypes
-from config import MIN_DEPOSITO, MIN_RETIRO, CARD_NUMBER, CONFIRMATION_NUMBER
-from database import obtener_saldo, crear_solicitud, actualizar_saldo
-from keyboards import get_navigation_keyboard, get_balance_keyboard
+from config import MIN_DEPOSITO, MIN_RETIRO, CARD_NUMBER, CONFIRMATION_NUMBER, ADMIN_ID, GROUP_ID
+from database import obtener_saldo, crear_solicitud
+from keyboards import get_navigation_keyboard, get_balance_keyboard, get_admin_keyboard
 import logging
 
 logger = logging.getLogger(__name__)
@@ -129,8 +129,13 @@ async def recibir_datos(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
                                f"💵 Monto: {monto} CUP\n"
                                f"📋 Datos: {datos}")
                 
-                # Aquí se enviaría el mensaje al admin (implementar después)
-                
+                keyboard = get_admin_keyboard(solicitud_id, tipo)
+                try:
+                    await context.bot.send_message(chat_id=ADMIN_ID, text=admin_message, reply_markup=keyboard)
+                    await context.bot.send_message(chat_id=GROUP_ID, text=admin_message, reply_markup=keyboard)
+                except Exception as e:
+                    logger.error(f"Error notificando al admin: {e}")
+
                 await update.message.reply_text(
                     "✅ Comprobante recibido. Espera la confirmación del administrador.",
                     reply_markup=get_navigation_keyboard()
@@ -145,7 +150,7 @@ async def recibir_datos(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     else:
         datos = update.message.text.strip()
         
-        solicitud_id = crear_solicitud(user_id, tipo, monto, datos)
+        solicitud_id = crear_solicitud(user_id, tipo, monto, datos=datos)
         
         if solicitud_id:
             admin_message = (f"📤 Nueva solicitud de RETIRO\n"
@@ -153,8 +158,13 @@ async def recibir_datos(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
                            f"💳 Monto: {monto} CUP\n"
                            f"📋 Datos: {datos}")
             
-            # Aquí se enviaría el mensaje al admin (implementar después)
-            
+            keyboard = get_admin_keyboard(solicitud_id, tipo)
+            try:
+                await context.bot.send_message(chat_id=ADMIN_ID, text=admin_message, reply_markup=keyboard)
+                await context.bot.send_message(chat_id=GROUP_ID, text=admin_message, reply_markup=keyboard)
+            except Exception as e:
+                logger.error(f"Error notificando al admin: {e}")
+
             await update.message.reply_text(
                 "✅ Solicitud de retiro enviada. Espera la confirmación del administrador.",
                 reply_markup=get_navigation_keyboard()
